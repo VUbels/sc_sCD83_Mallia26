@@ -1,4 +1,8 @@
+#!/usr/bin/env Rscript
+
+####################
 # 1. LIBRARY LOADING
+####################
 
 library(Seurat)
 library(DoubletFinder)
@@ -13,7 +17,9 @@ BiocManager::install("glmGamPoi")
 
 options(future.globals.maxSize = 2 * 1024^3)
 
+####################
 # 2. PARAMETERS
+####################
 
 input_folder <- "/mnt/d/scRNA_output/Mallia_25/Mallia_aRNA_corrected/"
 output_folder <- "/mnt/d/scRNA_output/Mallia_25/"
@@ -23,8 +29,9 @@ variables <- c("PBS_48h", "PBS_72h", "sCD83_48h", "sCD83_72h")
 # Create output directory for DoubletFinder results
 dir.create(paste0(output_folder, "DoubletFinder/"), showWarnings = FALSE)
 
-
+####################
 # 3. DATA LOADING AND INITIAL QC
+####################
 
 object.list <- list()
 
@@ -53,7 +60,9 @@ for (i in seq_along(objects)) {
   rm(obj)
 }
 
+####################
 # 4. INITIAL QC FILTERING
+####################
 
 for (i in seq_along(object.list)) {
   obj <- object.list[[i]]
@@ -65,7 +74,9 @@ for (i in seq_along(object.list)) {
   cat("Remaining cells after initial QC for", unique(obj$orig.ident), "is", ncol(obj), "cells\n")
 }
 
+####################
 # 5. DOUBLETFINDER PIPELINE
+####################
 
 for (i in seq_along(object.list)) {
   obj <- object.list[[i]]
@@ -75,15 +86,15 @@ for (i in seq_along(object.list)) {
   
   # DOUBLET RATE CALCULATION
   # Standard 10X Genomics doublet rate: ~0.8% per 1000 cells loaded
-  
-  # Option 1: Standard 0.8% per 1000 cells (10X recommendation)
   doublet_assumption <- (ncol(obj)/1000) * 0.008
   
   cat("Processing:", unique(obj$orig.ident), "\n")
   cat("Cells:", ncol(obj), "\n")
   cat("Expected doublet rate:", round(doublet_assumption * 100, 2), "%\n")
   
+  ####################
   # PREPROCESSING
+  ####################
   
   obj <- SCTransform(obj, seed.use = 1)
   obj <- RunPCA(obj)
@@ -106,7 +117,9 @@ for (i in seq_along(object.list)) {
   pK_optimal <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
   cat("Optimal pK:", pK_optimal, "\n")
   
+  ####################
   # HOMOTYPIC DOUBLET PROPORTION ESTIMATE
+  ####################
   
   annotations <- obj$seurat_clusters
   homotypic.prop <- modelHomotypic(annotations)
@@ -120,7 +133,9 @@ for (i in seq_along(object.list)) {
   
   pN <- 0.25
   
+  ####################
   # RUN DOUBLETFINDER - FIRST PASS
+  ####################
   
   cat("Running DoubletFinder (first pass)...\n")
   obj <- doubletFinder(obj, PCs = 1:n_pcs, pN = pN, pK = pK_optimal, 
@@ -132,13 +147,17 @@ for (i in seq_along(object.list)) {
   
   cat("Using pANN column:", pANN_col, "\n")
   
+  ####################
   # RUN DOUBLETFINDER - SECOND PASS (WITH HOMOTYPIC ADJUSTMENT)
+  ####################
   
   cat("Running DoubletFinder (second pass with homotypic adjustment)...\n")
   obj <- doubletFinder(obj, PCs = 1:n_pcs, pN = pN, pK = pK_optimal, 
                        nExp = nExp_poi.adj, reuse.pANN = pANN_col, sct = TRUE)
   
+  ####################
   # VISUALIZATION - pK OPTIMIZATION PLOT
+  ####################
   
   pk_visualized <- ggplot(bcmvn, aes(x = as.numeric(as.character(pK)), y = BCmetric)) +
     geom_point(color = "#272E6A", size = 2) +
@@ -158,7 +177,9 @@ for (i in seq_along(object.list)) {
   figure_output <- paste0(output_folder, "DoubletFinder/", unique(obj$orig.ident), "_pKvalue.png")
   ggsave(filename = figure_output, plot = pk_visualized, width = 5, height = 4)
   
+  ####################
   # VISUALIZATION - DOUBLET CLASSIFICATION
+  ####################
   
   # Get the final classification column (most recent one)
   doublet_col <- grep("^DF.classifications", colnames(obj@meta.data), value = TRUE)
@@ -185,7 +206,9 @@ for (i in seq_along(object.list)) {
   gc()
 }
 
+####################
 # 6. FILTER DOUBLETS
+####################
 
 # Filter singlets only
 object.list_filtered <- lapply(object.list, function(obj) {
@@ -195,7 +218,10 @@ object.list_filtered <- lapply(object.list, function(obj) {
   return(obj_filtered)
 })
 
+####################
 # 7. SAVE OUTPUT
+####################
+
 saveRDS(object.list, paste0(output_folder, "seurat_objects_with_doublets.rds"))
 saveRDS(object.list_filtered, paste0(output_folder, "seurat_objects_doublet_filtered.rds"))
 
