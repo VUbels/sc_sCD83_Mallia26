@@ -19,7 +19,7 @@ library(future)
 future::plan("sequential")
 
 main_folder <- "/mnt/d/scRNA_output/Mallia_25/"
-output_folder <- paste0(main_folder, "CellChat_results/")
+output_folder <- paste0("./cell_communication_results/")
 dir.create(output_folder, showWarnings = FALSE)
 
 # Cell types to exclude from analysis (Population descrepancy to high between treatments)
@@ -122,7 +122,7 @@ dev.off()
 gg1 <- rankNet(cellchat, mode = "comparison", stacked = TRUE, do.stat = TRUE)
 gg2 <- rankNet(cellchat, mode = "comparison", stacked = FALSE, do.stat = TRUE)
 
-pdf(paste0(output_folder, "Pathway_ranking.pdf"), width = 12, height = 8)
+pdf(paste0(output_folder, "pathway_ranking.pdf"), width = 12, height = 8)
 print(gg1 + gg2)
 dev.off()
 
@@ -230,7 +230,7 @@ dir.create(paste0(output_folder, "/circle_plots"), showWarnings = TRUE, recursiv
 for (i in seq_along(pathways_of_interest)) {
   
   pathway = pathways_of_interest[i]
-  pdf(paste0(output_folder, "/circle_plots/", pathway, "_cicleplot.pdf"), width = 8, height = 8)
+  pdf(paste0(output_folder, "/circle_plots/", pathway, "_circleplot.pdf"), width = 8, height = 8)
   
     tryCatch({
       # Check if pathway exists
