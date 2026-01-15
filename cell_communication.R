@@ -11,6 +11,7 @@ library(patchwork)
 library(dplyr)
 library(ComplexHeatmap)
 library(future)
+library(reticulate)
 
 ####################
 # 2. PARAMETERS
@@ -24,6 +25,32 @@ dir.create(output_folder, showWarnings = FALSE)
 
 # Cell types to exclude from analysis (Population descrepancy to high between treatments)
 exclude_cell_types <- c("ORS.1", "ORS.4")
+
+#######################
+# CONDA SETUP
+#######################
+
+env_name <- "cell_communication"
+options(reticulate.conda_binary = "/home/uvictor/miniconda3/bin/conda")
+
+# Check existing environments
+reticulate::conda_list()
+
+# Create if doesn't exist, otherwise just use it
+if (!(env_name %in% reticulate::conda_list()$name)) {
+  # Environment doesn't exist - create it
+  conda_create(env_name,
+               python_version = "3.9",
+               packages = c("pip", "umap-learn"))
+  use_condaenv(paste0("/home/uvictor/miniconda3/envs/", env_name), required = TRUE)
+} else {
+  # Environment exists
+  use_condaenv(paste0("/home/uvictor/miniconda3/envs/", env_name), required = TRUE)
+}
+
+# Verify configuration
+py_config()
+
 
 ####################
 # 3. DATA PREPARATION
@@ -346,10 +373,16 @@ draw(ht3 + ht4, ht_gap = unit(0.5, "cm"))
 dev.off()
 
 ####################
-# 12. EXTRACT SPECIFIC COMMUNICATIONS
+# 12. FUNCTIONAL ANALYSIS
 ####################
 
-# Functional analysis 
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "functional")
+cellchat <- netEmbedding(cellchat, type = "functional")
+cellchat <- netClustering(cellchat, type = "functional")
+
+pdf(paste0(output_folder, "functional_pathway_analysis.pdf"), width = 11, height = 9)
+netVisual_embeddingPairwise(cellchat, type = "functional", label.size = 3.5)
+dev.off()
 
 ####################
 # 13. SAVE OBJECTS
