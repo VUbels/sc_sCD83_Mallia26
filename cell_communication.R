@@ -23,6 +23,9 @@ main_folder <- "/mnt/d/scRNA_output/Mallia_25/"
 output_folder <- paste0("./cell_communication_results/")
 dir.create(output_folder, showWarnings = FALSE)
 
+#cellchat <- readRDS(paste0(output_folder, "cellchat_merged.rds"))
+#cellchat.list <- readRDS(paste0(output_folder, "cellchat_list.rds"))
+
 # Cell types to exclude from analysis (Population descrepancy to high between treatments)
 exclude_cell_types <- c("ORS.1", "ORS.4")
 
@@ -163,7 +166,7 @@ cell_types
 # Increased signaling
 result_increased <- netVisual_bubble(cellchat,
                                      sources.use = c(24),
-                                     targets.use = c(9,10,14,15,16),
+                                     targets.use = c(8,9,14,15,16),
                                      comparison = c(1, 2), 
                                      max.dataset = 2, 
                                      title.name = "Increased signaling after sCD83", 
@@ -179,7 +182,7 @@ result_increased <- netVisual_bubble(cellchat,
 # Decreased signaling
 result_decreased <- netVisual_bubble(cellchat,
                                      sources.use = c(24),
-                                     targets.use = c(9,10,14,15,16),
+                                     targets.use = c(8,9,14,15,16),
                                      comparison = c(1, 2), 
                                      max.dataset = 1, 
                                      title.name = "Decreased signaling after sCD83", 
@@ -206,9 +209,15 @@ gg_decreased <- result_decreased$gg.obj +
     legend.key.height = unit(0.05, 'npc')
   )
 
-pdf(paste0(output_folder, "LR_pair_changes_sCD83.pdf"), width = 15, height = 10)
+ggsave(paste0(output_folder, "LR_pair_changes_up_sCD83.png"), plot = gg_increased, width = 6, height = 10)
+ggsave(paste0(output_folder, "LR_pair_changes_down_sCD83.png"), plot = gg_decreased, width = 7, height = 10)
+
+
+pdf(paste0(output_folder, "LR_pair_changes_sCD83.pdf"), width = 10.5, height = 10)
 print(gg_increased + gg_decreased)
 dev.off()
+
+
 
 # Extract data for downstream analysis
 lr_increased_data <- result_increased$data
