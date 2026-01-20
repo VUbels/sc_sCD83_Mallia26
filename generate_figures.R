@@ -820,8 +820,10 @@ run_full_de_pipeline <- function(
 # MAIN FUNCTION TO RUN
 ##########################################################################
 
+obj <- readRDS("/mnt/d/scrna_output/mallia_25/Mallia_25_LogN_Annotated.RDS")
+
 # Clusters to remove from fine_clust column (imbalanced between conditions)
-clusters_to_remove <- c("ORS.1", "ORS.4", "ORS.5", "ORS.6")
+clusters_to_remove <- c("ORS.1", "ORS.4", "ORS.5", "ORS.6", "Immune-associated.KCs", "Immune-associated.FBs")
 
 # Check balance BEFORE running (optional)
 show_sample_balance(
@@ -845,7 +847,7 @@ results <- run_full_de_pipeline(
   top_n_genes = 2000,
   logfc_thresh = 0.5,
   pval_thresh = 0.05,
-  output_dir = "DE_results_balanced"
+  output_dir = "DE_results"
 )
 
 # View results
