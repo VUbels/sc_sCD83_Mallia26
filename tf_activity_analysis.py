@@ -28,13 +28,13 @@ warnings.filterwarnings('ignore')
 ################
 
 # Paths
-main_folder = "/mnt/d/scrna_output/mallia_25_comp/"
-save_dir = os.path.join(main_folder, "mallia_tfactivity")
+main_folder = "/mnt/d/scrna_output/mallia_25/"
+save_dir = os.path.join("./mallia_tfactivity")
 os.makedirs(save_dir, exist_ok=True)
 
 # Input files
 adata_path = os.path.join(main_folder, "Mallia_25_LogN.h5ad")
-grn_path = os.path.join(save_dir, "Greenleaf23_Skin_GRN_dataframe.parquet")
+grn_path = os.path.join(main_folder, "Greenleaf23_Skin_GRN_dataframe.parquet")
 
 # Cell types to exclude (optional)
 cells_to_remove = ['ORS.1', 'ORS.4', 'ORS.5', 'ORS.6'] #This is to prevent anomalies introduced due to severe population difference size between conditions.
@@ -43,6 +43,90 @@ cells_to_remove = ['ORS.1', 'ORS.4', 'ORS.5', 'ORS.6'] #This is to prevent anoma
 MIN_WEIGHT = 0.1        # Minimum weight for unexpressed TFs (protects niche populations)
 MAX_WEIGHT = 1.0        # Maximum weight cap
 SCALE_TO_MAX = 10.0     # Scale final weights to [0, 10] range (99th percentile normalization)
+
+################
+# COMMAND LINE ARGUMENTS
+################
+
+import argparse
+
+def parse_arguments():
+    """
+    Parse command line arguments for model loading vs training.
+    """
+    parser = argparse.ArgumentParser(
+        description='scRegulate: Weighted GRN + Differential TF + Ontology Pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--load-model', '-l',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Path to directory containing pre-trained model outputs.'
+    )
+    
+    parser.add_argument(
+        '--train', '-t',
+        action='store_true',
+        help='Train a new model (default behavior if --load-model not specified)'
+    )
+    
+    parser.add_argument(
+        '--output-dir', '-o',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Output directory for results (overrides config)'
+    )
+    
+    # Individual file specification arguments
+    parser.add_argument(
+        '--adata-file',
+        type=str,
+        default="processed_adata.h5ad",
+        metavar='FILENAME',
+        help='Filename for processed AnnData (default: processed_adata.h5ad)'
+    )
+    
+    parser.add_argument(
+        '--tf-file',
+        type=str,
+        default="tf_activities.h5ad",
+        metavar='FILENAME',
+        help='Filename for TF activities (default: tf_activities.h5ad)'
+    )
+    
+    parser.add_argument(
+        '--grn-file',
+        type=str,
+        default="GRN.pkl",
+        metavar='FILENAME',
+        help='Filename for GRN pickle (default: GRN.pkl)'
+    )
+    
+    parser.add_argument(
+        '--model-file',
+        type=str,
+        default="fine_model.pt",
+        metavar='FILENAME',
+        help='Filename for PyTorch model (default: fine_model.pt)'
+    )
+    
+    parser.add_argument(
+        '--skip-enrichment',
+        action='store_true',
+        help='Skip ontology enrichment analysis'
+    )
+    
+    parser.add_argument(
+        '--skip-plots',
+        action='store_true',
+        help='Skip visualization generation'
+    )
+    
+    return parser.parse_args()
 
 # scRegulate training parameters
 TRAINING_PARAMS = {
@@ -691,7 +775,7 @@ def analyze_cluster_similarity(processed_adata, save_dir, subset_clusters=None):
     sns_plot = sns.clustermap(
         similarity_df, 
         figsize=(12, 12),
-        annot=True, 
+        annot=False, 
         fmt=".1f", 
         annot_kws={"size": 8},
         cmap="RdBu_r",
@@ -997,78 +1081,149 @@ def save_model_outputs(model, processed_adata, fine_tuned_tf_activities, GRN, sa
     print("\nAll outputs saved successfully")
 
 
-def load_model_outputs(save_dir, prefix="", model_architecture=None):
+def load_model_outputs(load_dir, adata_file="processed_adata.h5ad", 
+                       tf_file="tf_activities.h5ad", grn_file="GRN.pkl",
+                       model_file="fine_model.pt"):
     """
     Load previously saved model outputs.
     
     Parameters:
     -----------
-    save_dir : str
+    load_dir : str
         Directory containing saved outputs
-    prefix : str
-        File prefix used when saving
-    model_architecture : dict or None
-        Dict with keys: input_dim, encode_dims, decode_dims, z_dim, tf_dim
-        If None, will try to infer from GRN
+    adata_file : str
+        Filename for processed AnnData
+    tf_file : str
+        Filename for TF activities
+    grn_file : str
+        Filename for GRN pickle
+    model_file : str
+        Filename for PyTorch model
     
     Returns:
     --------
     model, processed_adata, tf_activities, GRN
     """
     print("LOADING MODEL OUTPUTS")
+    print(f"  Directory: {load_dir}")
+    print(f"  AnnData:   {adata_file}")
+    print(f"  TF file:   {tf_file}")
+    print(f"  GRN file:  {grn_file}")
+    print(f"  Model:     {model_file}")
+    
     import scregulate as reg
     
     # Load processed AnnData
-    adata_path = os.path.join(save_dir, f"{prefix}processed_adata.h5ad")
-    processed_adata = ad.read_h5ad(adata_path)
-    print(f"Loaded processed_adata: {processed_adata.shape}")
+    adata_path = os.path.join(load_dir, adata_file)
+    if not os.path.exists(adata_path):
+        raise FileNotFoundError(f"AnnData file not found: {adata_path}")
     
-    # Load TF activities
-    tf_path = os.path.join(save_dir, f"{prefix}tf_activities.h5ad")
+    processed_adata = ad.read_h5ad(adata_path)
+    print(f"\nLoaded processed_adata: {processed_adata.shape}")
+    
+    # Load TF activities (optional)
+    tf_path = os.path.join(load_dir, tf_file)
     if os.path.exists(tf_path):
         tf_activities = ad.read_h5ad(tf_path)
         print(f"Loaded tf_activities: {tf_activities.shape}")
     else:
         tf_activities = None
-        print("  No tf_activities file found")
+        print(f"TF activities file not found (optional): {tf_file}")
     
     # Load GRN
-    grn_path = os.path.join(save_dir, f"{prefix}GRN.pkl")
+    grn_path = os.path.join(load_dir, grn_file)
+    if not os.path.exists(grn_path):
+        raise FileNotFoundError(f"GRN file not found: {grn_path}")
+    
     with open(grn_path, "rb") as f:
         GRN = pickle.load(f)
-    print(f"Loaded GRN: {GRN.shape}")
     
-    # Reconstruct model architecture if not provided
-    if model_architecture is None:
-        model_architecture = {
-            'input_dim': GRN.shape[0],
-            'tf_dim': GRN.shape[1],
-            'encode_dims': [2048, 256, 64],
-            'decode_dims': [256],
-            'z_dim': 40
-        }
+    # Handle different GRN formats
+    if isinstance(GRN, dict):
+        print(f"Loaded GRN: dict with {len(GRN)} keys")
+        print(f"  Keys: {list(GRN.keys())[:10]}{'...' if len(GRN) > 10 else ''}")
+        
+        # Extract dimensions from dict or from processed_adata
+        if 'matrix' in GRN:
+            grn_matrix = GRN['matrix']
+            input_dim = grn_matrix.shape[0]
+            tf_dim = grn_matrix.shape[1]
+        elif 'shape' in GRN:
+            input_dim, tf_dim = GRN['shape']
+        else:
+            # Infer from processed_adata
+            input_dim = processed_adata.n_vars
+            if tf_activities is not None:
+                tf_dim = tf_activities.n_vars
+            elif 'TF_names' in processed_adata.uns:
+                tf_dim = len(processed_adata.uns['TF_names'])
+            else:
+                raise ValueError("Cannot determine TF dimension from GRN dict. "
+                                "Keys available: " + str(list(GRN.keys())))
+    elif isinstance(GRN, (np.ndarray, pd.DataFrame)):
+        if isinstance(GRN, pd.DataFrame):
+            print(f"Loaded GRN: DataFrame {GRN.shape}")
+        else:
+            print(f"Loaded GRN: array {GRN.shape}")
+        input_dim = GRN.shape[0]
+        tf_dim = GRN.shape[1]
+    else:
+        print(f"Loaded GRN: {type(GRN)}")
+        # Fallback to processed_adata dimensions
+        input_dim = processed_adata.n_vars
+        if tf_activities is not None:
+            tf_dim = tf_activities.n_vars
+        elif 'TF_names' in processed_adata.uns:
+            tf_dim = len(processed_adata.uns['TF_names'])
+        else:
+            raise ValueError(f"Unknown GRN type: {type(GRN)} and cannot infer dimensions")
     
-    # Initialize and load model
-    model = reg.scRNA_VAE(
-        input_dim=model_architecture['input_dim'],
-        encode_dims=model_architecture['encode_dims'],
-        decode_dims=model_architecture['decode_dims'],
-        z_dim=model_architecture['z_dim'],
-        tf_dim=model_architecture['tf_dim']
-    )
+    print(f"  Model dimensions: input_dim={input_dim}, tf_dim={tf_dim}")
     
-    model_path = os.path.join(save_dir, f"{prefix}model.pt")
-    model.load_state_dict(torch.load(model_path))
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    print(f"Loaded model to device: {device}")
-    
-    # Set modality structure
+    # Set up modality structure
     processed_adata.modality = {}
     processed_adata.modality['RNA'] = processed_adata.copy()
     if tf_activities is not None:
         processed_adata.modality['TF'] = tf_activities.copy()
+    
+    # Copy TF activity to obsm if not already present
+    if 'TF_activity' not in processed_adata.obsm:
+        if tf_activities is not None:
+            # TF activities stored in separate AnnData - copy X matrix to obsm
+            if hasattr(tf_activities.X, 'toarray'):
+                processed_adata.obsm['TF_activity'] = tf_activities.X.toarray()
+            else:
+                processed_adata.obsm['TF_activity'] = tf_activities.X.copy()
+            print(f"Copied TF activity to obsm: {processed_adata.obsm['TF_activity'].shape}")
+            
+            # Also copy TF names if available
+            if 'TF_names' not in processed_adata.uns:
+                processed_adata.uns['TF_names'] = tf_activities.var_names.tolist()
+                print(f"Copied TF names: {len(processed_adata.uns['TF_names'])} TFs")
+        else:
+            print("WARNING: No TF activity data found in obsm or separate file")
+    else:
+        print(f"TF_activity already in obsm: {processed_adata.obsm['TF_activity'].shape}")
+    
+    # Initialize and load model
+    model = reg.scRNA_VAE(
+        input_dim=input_dim,
+        encode_dims=TRAINING_PARAMS['encoder_dims'],
+        decode_dims=TRAINING_PARAMS['decoder_dims'],
+        z_dim=TRAINING_PARAMS['z_dim'],
+        tf_dim=tf_dim
+    )
+    
+    model_path = os.path.join(load_dir, model_file)
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        print(f"Loaded model to device: {device}")
+    else:
+        model = None
+        print(f"Model file not found (optional): {model_file}")
+        print("  Analysis can still proceed with processed_adata")
     
     return model, processed_adata, tf_activities, GRN
 
@@ -1412,109 +1567,133 @@ def create_enrichment_dotplot(up_results, down_results, save_dir,
 
 if __name__ == "__main__":
     
-    # Load data
-    print("\nLoading data...")
-    adata = sc.read_h5ad(adata_path)
-    print(f"Loaded adata: {adata.shape}")
+    # Parse command line arguments
+    args = parse_arguments()
     
-    # Prepare data (creates treatment column, filters cells, normalizes)
-    rna_data, adata_filtered = prepare_data(adata, cells_to_remove=cells_to_remove)
+    # Override output directory if specified
+    if args.output_dir:
+        save_dir = args.output_dir
+        os.makedirs(save_dir, exist_ok=True)
+        print(f"Output directory set to: {save_dir}")
     
-    # Load GRN
-    skin_grn_raw = pd.read_parquet(grn_path)
-    print(f"Loaded GRN: {skin_grn_raw.shape}")
-    
-    ################
-    # Build weighted GRN
-    ################
-    net_weighted, tf_weights = build_weighted_grn(
-        adata=adata_filtered,
-        skin_grn_raw=skin_grn_raw,
-        save_dir=save_dir,
-        min_weight=MIN_WEIGHT,
-        max_weight=MAX_WEIGHT,
-        scale_to_max=SCALE_TO_MAX
-    )
+    print("scRegulate: WEIGHTED GRN + DIFFERENTIAL TF + ONTOLOGY PIPELINE")
     
     ################
-    # Train scRegulate model (uncomment to run)
+    # LOAD EXISTING MODEL (if --load-model specified)
     ################
-    # model, processed_adata = train_scregulate_model(
-    #     adata=rna_data,
-    #     net_weighted=net_weighted,
-    #     save_dir=save_dir,
-    #     training_params=TRAINING_PARAMS,
-    #     finetune_params=FINETUNE_PARAMS
-    # )
-    # 
-    # # Save model outputs after training
-    # save_model_outputs(
-    #     model=model,
-    #     processed_adata=processed_adata,
-    #     fine_tuned_tf_activities=None,  # or tf_activities if available
-    #     GRN=GRN,
-    #     save_dir=save_dir,
-    #     prefix="Mallia_"
-    # )
-    
-    ################
-    # LOAD EXISTING PROCESSED DATA (alternative to training)
-    ################
-    processed_adata_path = os.path.join(save_dir, "processed_adata_Mallia.h5ad")
-    if not os.path.exists(processed_adata_path):
-        processed_adata_path = os.path.join(save_dir, "processed_adata.h5ad")
-    
-    if os.path.exists(processed_adata_path):
-        print(f"\nLoading existing processed data from: {processed_adata_path}")
-        processed_adata = sc.read_h5ad(processed_adata_path)
+    if args.load_model:
+        print(f"\n{'='*60}")
+        print(f"LOADING PRE-TRAINED MODEL FROM: {args.load_model}")
+        print(f"{'='*60}")
         
-        ################
-        # Cluster similarity analysis
-        ################
+        model, processed_adata, tf_activities, GRN = load_model_outputs(
+            load_dir=args.load_model,
+            adata_file=args.adata_file,
+            tf_file=args.tf_file,
+            grn_file=args.grn_file,
+            model_file=args.model_file
+        )
+        
+    ################
+    # TRAIN NEW MODEL
+    ################
+    else:
+        print(f"\n{'='*60}")
+        print("TRAINING NEW MODEL")
+        print(f"{'='*60}")
+        
+        # Load data
+        print("\nLoading data...")
+        adata = sc.read_h5ad(adata_path)
+        print(f"Loaded adata: {adata.shape}")
+        
+        # Prepare data
+        rna_data, adata_filtered = prepare_data(adata, cells_to_remove=cells_to_remove)
+        
+        # Load GRN
+        skin_grn_raw = pd.read_parquet(grn_path)
+        print(f"Loaded GRN: {skin_grn_raw.shape}")
+        
+        # Build weighted GRN
+        net_weighted, tf_weights = build_weighted_grn(
+            adata=adata_filtered,
+            skin_grn_raw=skin_grn_raw,
+            save_dir=save_dir,
+            min_weight=MIN_WEIGHT,
+            max_weight=MAX_WEIGHT,
+            scale_to_max=SCALE_TO_MAX
+        )
+        
+        if args.train:
+            # Train scRegulate model
+            model, processed_adata = train_scregulate_model(
+                adata=rna_data,
+                net_weighted=net_weighted,
+                save_dir=save_dir,
+                training_params=TRAINING_PARAMS,
+                finetune_params=FINETUNE_PARAMS
+            )
+        else:
+            # Load existing processed data (original behavior)
+            processed_adata_path = os.path.join(save_dir, "processed_adata_Mallia.h5ad")
+            if not os.path.exists(processed_adata_path):
+                processed_adata_path = os.path.join(save_dir, "processed_adata.h5ad")
+            
+            if os.path.exists(processed_adata_path):
+                print(f"\nLoading existing processed data from: {processed_adata_path}")
+                processed_adata = sc.read_h5ad(processed_adata_path)
+            else:
+                print(f"\nNo processed data found. Use --train to train a new model.")
+                exit(1)
+    
+    ################
+    # DOWNSTREAM ANALYSIS
+    ################
+    print(f"\n{'='*60}")
+    print("RUNNING DOWNSTREAM ANALYSIS")
+    print(f"{'='*60}")
+    
+    # Cluster similarity analysis
+    if not args.skip_plots:
         similarity_df = analyze_cluster_similarity(
             processed_adata=processed_adata,
             save_dir=save_dir,
-            subset_clusters=CUSTOM_CELLTYPE_ORDER[:25]  # Optional subset
+            subset_clusters=CUSTOM_CELLTYPE_ORDER[:25]
         )
-        
-        ################
-        # Differential TF activity analysis
-        ################
-        results_df = differential_tf_activity(
-            processed_adata=processed_adata,
-            save_dir=save_dir,
-            diff_params=DIFF_PARAMS
-        )
-        
-        # Create differential heatmap
+    
+    # Differential TF activity analysis
+    results_df = differential_tf_activity(
+        processed_adata=processed_adata,
+        save_dir=save_dir,
+        diff_params=DIFF_PARAMS
+    )
+    
+    # Create differential heatmap
+    if not args.skip_plots:
         heatmap_df, diff_results = create_differential_heatmap(
             processed_adata=processed_adata,
             save_dir=save_dir,
             heatmap_params=HEATMAP_PARAMS,
             custom_order=CUSTOM_CELLTYPE_ORDER
         )
-        
-        ################
-        # Ontology enrichment
-        ################
+    
+    # Ontology enrichment
+    if not args.skip_enrichment:
         up_results, down_results = run_ontology_enrichment(
             results_df=results_df,
             save_dir=save_dir,
             enrichment_params=ENRICHMENT_PARAMS
         )
         
-        ################
         # Visualization
-        ################
-        create_enrichment_dotplot(
-            up_results=up_results,
-            down_results=down_results,
-            save_dir=save_dir,
-            custom_celltype_order=CUSTOM_CELLTYPE_ORDER
-        )
-        
-    else:
-        print(f"\nNo processed data found at: {processed_adata_path}")
-        print("Run training first (uncomment training section)")
+        if not args.skip_plots:
+            create_enrichment_dotplot(
+                up_results=up_results,
+                down_results=down_results,
+                save_dir=save_dir,
+                custom_celltype_order=CUSTOM_CELLTYPE_ORDER
+            )
     
+    print(f"\n{'='*60}")
     print("PIPELINE COMPLETE")
+    print(f"{'='*60}")
