@@ -6,4 +6,5 @@
 *.rds
 *.csv
 *.parquet
-*
+*.h5
+*.log
