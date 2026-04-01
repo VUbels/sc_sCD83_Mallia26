@@ -3,13 +3,12 @@
 .RData
 .Ruserdata
 
-.rds
-.h5ad
-.h5
-
 *.rds
 *.csv
 *.parquet
 *.h5
 *.log
 *.h5ad
+*.pkl
+*.parquet
+*.pt
