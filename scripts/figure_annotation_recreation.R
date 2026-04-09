@@ -306,7 +306,7 @@ marker_genes <- list(
   ),
   
   Immune = list(
-    T.Naive.ANK3    = c("PTPRC", "CD96", "IL7R", "ANK3"),
+    T.Naive.ANK3    = c("PTPRC", "CD96", "IL7R", "ANK3markers"),
     T.Naive         = c("CD3D", "CD3E", "IL7R"),
     M2.Macrophages  = c("MRC1", "CCL3", "CD83"),
     MAIT.cells      = c("KLRB1", "BLK"),

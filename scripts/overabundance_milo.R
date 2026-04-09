@@ -1,304 +1,276 @@
 #!/usr/bin/env Rscript
 
-
-####################
-# 1. LIBRARY LOADING
-####################
+# =============================================================================
+# Milo DA Pipeline with Consistent Seurat-Based Embeddings
+# =============================================================================
+# Per mapping_cell_type:
+#   - Subset Seurat object
+#   - cluster_subcluster() -> PCA + UMAP in Seurat
+#   - Plot split UMAP and single UMAP from the Seurat reduction
+#   - Convert to SCE, inject the Seurat PCA + UMAP into reducedDim
+#   - Build Milo on the SAME PCA -> DA testing
+#   - Plot Milo DA neighbourhood graph in the SAME UMAP space
+#   - Full diagnostic suite: beeswarm, volcano, p-value hist, nhood sizes
+#   - Extract DA cells, save summary stats
+#
+# Key design decision: Milo never recomputes PCA/UMAP via scater/scran.
+# The Seurat subclustering reduction is THE reduction for everything.
+# This guarantees that the split UMAP, single UMAP, and neighbourhood
+# graph all share identical coordinates.
+#
+# Assumes Seurat v5 (layers, not assays).
+# =============================================================================
 
 library(Seurat)
 library(miloR)
 library(SingleCellExperiment)
-library(scater)
-library(scran)
-library(dplyr)
-library(patchwork)
 library(scuttle)
-library(irlba)
-library(BiocParallel)
+library(dplyr)
 library(ggplot2)
-library(sparseMatrixStats)
-library(igraph) 
+library(patchwork)
+library(BiocParallel)
+library(igraph)
 
+# Source helpers
 source("./scripts/helper_functions.R")
+source("./scripts/milo_plot_helpers.R")
 
-####################
-# 2. PARAMETERS
-####################
+
+###################################################
+# PARAMETERS
+###################################################
 
 main_folder <- "./"
-input_file <- paste0(main_folder, "fine_annotated_obj.rds")
+input_file  <- paste0(main_folder, "fine_annotated_obj.rds")
+output_dir  <- file.path(main_folder, "milo_results/")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-# Create output directory
-milo_dir <- file.path(main_folder, "milo_results/")
-dir.create(milo_dir, showWarnings = FALSE, recursive = TRUE)
+# Subclustering parameters per cell type.
+# These match the clustering script and control Seurat PCA dims.
+# The same dims are passed to Milo's buildGraph(d = ...).
+subcluster_params <- list(
+  Keratinocytes = list(dims = 1:30),
+  Fibroblasts   = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
+  Immune        = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
+  Endothelial   = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
+  Remaining     = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE)
+)
 
-####################
-# 3. DATA LOADING
-####################
 
-# Load full Seurat object
+###################################################
+# DATA LOADING
+###################################################
+
 obj <- readRDS(input_file)
 
-# CRITICAL: Force RNA assay so SCE conversion pulls raw counts, not SCT residuals
+# Force RNA so SCE conversion pulls raw counts, not SCT residuals
 DefaultAssay(obj) <- "RNA"
-obj$mapping_cell_type <- sub("\\.\\d+$", "", obj$broad_cluster)
 
-# Normalize the RNA layer explicitly
+# Derive mapping_cell_type from broad_cluster if absent
+if (!"mapping_cell_type" %in% colnames(obj@meta.data)) {
+  obj$mapping_cell_type <- sub("\\.\\d+$", "", obj$broad_cluster)
+}
+
+# Normalize the RNA layer
 obj <- NormalizeData(obj, normalization.method = "LogNormalize", scale.factor = 10000)
 
-# Get unique cell types from mapping_cell_type
+# Resolve cell types to loop over
 cell_types <- unique(obj@meta.data$mapping_cell_type)
-cell_types <- cell_types[!is.na(cell_types)]  # Remove NAs if any
+cell_types <- cell_types[!is.na(cell_types)]
 
 cat("Cell types to analyze:\n")
 print(cell_types)
 
-####################
-# 4. LOOP THROUGH CELL TYPES
-####################
 
-for (cell_type in cell_types) {
+###################################################
+# MAIN LOOP
+###################################################
+
+bpparam <- SerialParam()
+register(bpparam)
+
+for (ct in cell_types) {
   
-  cat("Processing:", cell_type, "\n")
+  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat("  Processing:", ct, "\n")
+  cat(paste(rep("=", 60), collapse = ""), "\n")
   
-  cell_type_dir <- file.path(milo_dir, cell_type)
+  cell_type_dir <- file.path(output_dir, ct)
   dir.create(cell_type_dir, showWarnings = FALSE, recursive = TRUE)
-  obj_subset <- subset(obj, subset = mapping_cell_type == cell_type)
   
-  cat("Number of cells:", ncol(obj_subset), "\n")
+  # Subset
+  obj_sub <- subset(obj, subset = mapping_cell_type == ct)
+  cat("Cells:", ncol(obj_sub), "\n")
   
-  ####################
-  # 5. MILOR SETUP
-  ####################
+  # Subcluster: Seurat PCA + UMAP.
+  # After this, obj_sub has "pca" and "umap" reductions.
+  # These are THE reductions used everywhere downstream.
+  params <- subcluster_params[[ct]]
+  if (!is.null(params)) {
+    obj_sub <- do.call(
+      cluster_subcluster,
+      c(list(obj_sub, output_dir = cell_type_dir), params)
+    )
+  } else {
+    cat("  No preset params for", ct, "-- using defaults (dims 1:20)\n")
+    obj_sub <- cluster_subcluster(obj_sub, output_dir = cell_type_dir, dims = 1:20)
+    params <- list(dims = 1:20)
+  }
   
-  # Verify RNA is default before conversion
-  cat("Default assay before SCE conversion:", DefaultAssay(obj_subset), "\n")
+  # Split UMAP from Seurat
+  p_split <- plot_split_dimred(
+    obj_sub,
+    split_by  = "treatment",
+    color_by  = "fine_clust",
+    reduction = "umap",
+    pt_size   = 0.3,
+    title     = paste0(ct, " | ", ncol(obj_sub), " cells")
+  )
+  ggsave(file.path(cell_type_dir, "UMAP_split_treatment.png"),
+         p_split, width = 10, height = 5, dpi = 300)
   
-  # Convert to SingleCellExperiment
-  obj.sce <- as.SingleCellExperiment(obj_subset)
-  rm(obj_subset)
-  gc()
+  # Single UMAP colored by fine_clust
+  p_single <- plot_single_dimred(
+    obj_sub,
+    color_by  = "fine_clust",
+    reduction = "umap",
+    pt_size   = 0.3,
+    title     = paste0(ct, " | ", ncol(obj_sub), " cells")
+  )
+  ggsave(file.path(cell_type_dir, "UMAP_fine_clust.png"),
+         p_single, width = 7, height = 6, dpi = 300)
   
-  # Verify what assays are present in the SCE
-  cat("SCE assays:", paste(assayNames(obj.sce), collapse = ", "), "\n")
+  # Single UMAP colored by treatment
+  p_treat <- plot_single_dimred(
+    obj_sub,
+    color_by  = "treatment",
+    reduction = "umap",
+    pt_size   = 0.3,
+    title     = paste0(ct, " | Treatment")
+  )
+  ggsave(file.path(cell_type_dir, "UMAP_treatment.png"),
+         p_treat, width = 7, height = 6, dpi = 300)
   
-  # Set up parallel processing
-  bpparam <- SerialParam()
-  register(bpparam)
-  set.seed(42)
+  # Run Milo pipeline (using Seurat PCA/UMAP).
+  # d is set to the number of PCA dims from subclustering.
+  # k and prop are adaptive based on dataset size.
+  milo_d   <- length(params$dims)
+  adaptive <- get_milo_params(ncol(obj_sub),
+                              length(unique(obj_sub$orig.ident)))
   
-  # Force fresh log-normalization from raw counts regardless of existing layers
-  # This ensures we are working from RNA counts, not any SCT artifact
-  obj.sce <- logNormCounts(obj.sce)
-  
-  # Feature selection
-  dec <- modelGeneVar(obj.sce)
-  hvgs <- getTopHVGs(dec, n = 2000)
-  
-  # PCA
-  obj.sce <- runPCA(obj.sce, subset_row = hvgs, ncomponents = 50)
-  
-  # UMAP
-  obj.sce <- runUMAP(obj.sce, dimred = "PCA", n_neighbors = 30, min_dist = 0.3)
-  
-  # Save UMAP plot
-  png(file.path(cell_type_dir, "UMAP_treatment.png"), width = 8, height = 6, units = "in", res = 300)
-  print(plotUMAP(obj.sce, colour_by = "treatment") + ggtitle(cell_type))
-  dev.off()
-  
-  ####################
-  # 6. CREATE MILO OBJECT
-  ####################
-  
-  cat("Creating Milo object...\n")
-  obj.milo <- Milo(obj.sce)
-  
-  # Build KNN graph
-  obj.milo <- buildGraph(obj.milo, k = 50, d = 50, reduced.dim = "PCA")
-  
-  # Make neighborhoods
-  obj.milo <- makeNhoods(obj.milo, prop = 0.1, k = 50, d = 50, 
-                         refined = TRUE, reduced_dims = "PCA")
-  
-  # Save neighborhood size histogram
-  png(file.path(cell_type_dir, "neighborhood_size_hist.png"), width = 6, height = 5, units = "in", res = 300)
-  print(plotNhoodSizeHist(obj.milo) +
-          labs(title = paste(cell_type, "- Neighborhood Sizes"),
-               subtitle = paste("Total neighborhoods:", ncol(nhoods(obj.milo)))))
-  dev.off()
-  
-  cat("Number of neighborhoods:", ncol(nhoods(obj.milo)), "\n")
-  
-  mean_nhood_size <- mean(colSums(nhoods(obj.milo)))
-  cat("Mean neighborhood size:", round(mean_nhood_size, 1), 
-      "(target: >=", 5 * 4, ")\n")
-  
-  ####################
-  # 7. COUNT CELLS AND CALC DISTANCES
-  ####################
-  
-  cat("Counting cells in neighborhoods...\n")
-  obj.milo <- countCells(obj.milo, 
-                         meta.data = data.frame(colData(obj.milo)), 
-                         samples = "orig.ident")
-  
-  # Fixed: d=50 matches buildGraph (was d=30 previously)
-  cat("Calculating neighborhood distances...\n")
-  obj.milo <- calcNhoodDistance(obj.milo, d = 50, reduced.dim = "PCA")
-  
-  ####################
-  # 8. CREATE DESIGN MATRIX
-  ####################
-  
-  sample_meta <- colData(obj.milo) %>%
-    as.data.frame() %>%
-    dplyr::select(orig.ident, treatment) %>%
-    distinct()
-  
-  design_matrix <- data.frame(
-    Sample = sample_meta$orig.ident,
-    Treatment = sample_meta$treatment
+  milo_res <- run_milo_pipeline(
+    obj_sub,
+    k             = adaptive$k,
+    d             = milo_d,
+    prop          = adaptive$prop,
+    sample_col    = "orig.ident",
+    treatment_col = "treatment",
+    pca_name      = "pca",
+    umap_name     = "umap"
   )
   
-  rownames(design_matrix) <- design_matrix$Sample
-  design_matrix <- design_matrix[colnames(nhoodCounts(obj.milo)), ]
+  # Milo DA neighbourhood graph.
+  # layout="UMAP" uses the injected Seurat UMAP -> same coordinates.
+  p_milo <- plot_milo_da(
+    milo_res$milo,
+    milo_res$da_results,
+    alpha  = 0.05,
+    layout = "UMAP",
+    title  = paste0(ct, " | Milo DA")
+  )
+  ggsave(file.path(cell_type_dir, "nhood_graph_DA.png"),
+         p_milo, width = 8, height = 8, dpi = 300)
   
-  cat("Design matrix:\n")
-  print(design_matrix)
+  # Nhood graph with p-value filtering
+  png(file.path(cell_type_dir, "nhood_graph_pval.png"),
+      width = 8, height = 8, units = "in", res = 300)
+  print(plotNhoodGraphDA_pval(milo_res$milo, milo_res$da_results,
+                              alpha = 0.05, use_pvalue = TRUE,
+                              layout = "UMAP"))
+  dev.off()
   
-  ####################
-  # 9. TEST FOR DA
-  ####################
+  # Compose: [Split UMAP] | [Milo DA graph]
+  p_row <- compose_row(p_split, p_milo, widths = c(3, 2),
+                       row_label = ct)
+  ggsave(file.path(cell_type_dir, "combined_umap_milo.png"),
+         p_row, width = 16, height = 6, dpi = 300)
   
-  # Using ~ Treatment only (no Time covariate as this would effectively kill MiloR for limited samples)
-
-  cat("Testing for differential abundance...\n")
-  da_results <- testNhoods(obj.milo, 
-                           design = ~ Treatment,
-                           design.df = design_matrix)
-  
-  cat("Significant neighborhoods (P < 0.05):", sum(da_results$PValue < 0.05, na.rm = TRUE), "\n")
-  cat("  - Upregulated:", sum(da_results$PValue < 0.05 & da_results$logFC > 0, na.rm = TRUE), "\n")
-  cat("  - Downregulated:", sum(da_results$PValue < 0.05 & da_results$logFC < 0, na.rm = TRUE), "\n")
-  cat("Significant neighborhoods (SpatialFDR < 0.1):", sum(da_results$SpatialFDR < 0.1, na.rm = TRUE), "\n")
-  
-  ####################
-  # 10. BUILD NHOOD GRAPH
-  ####################
-  
-  cat("Building neighborhood graph...\n")
-  obj.milo <- buildNhoodGraph(obj.milo)
-  
-  ####################
-  # 11. VISUALIZATIONS
-  ####################
-  
-  cat("Generating visualizations...\n")
+  # Neighbourhood size histogram
+  p_nhood <- plot_nhood_size_hist(
+    milo_res$milo,
+    title = paste0(ct, " - Neighbourhood Sizes")
+  )
+  ggsave(file.path(cell_type_dir, "neighborhood_size_hist.png"),
+         p_nhood, width = 6, height = 5, dpi = 300)
   
   # P-value histogram
-  png(file.path(cell_type_dir, "pvalue_histogram.png"), width = 6, height = 5, units = "in", res = 300)
-  print(ggplot(da_results, aes(PValue)) + 
-          geom_histogram(bins = 50, fill = "#272E6A", color = "white") +
-          theme_classic() +
-          labs(title = paste(cell_type, "- P-value Distribution"), 
-               x = "P-value", y = "Count"))
-  dev.off()
+  p_pval <- plot_pvalue_hist(
+    milo_res$da_results,
+    title = paste0(ct, " - P-value Distribution")
+  )
+  ggsave(file.path(cell_type_dir, "pvalue_histogram.png"),
+         p_pval, width = 6, height = 5, dpi = 300)
   
   # Volcano plot
-  png(file.path(cell_type_dir, "volcano_plot.png"), width = 7, height = 6, units = "in", res = 300)
-  print(ggplot(da_results, aes(logFC, -log10(PValue))) + 
-          geom_point(aes(color = PValue < 0.05), size = 2) +
-          scale_color_manual(values = c("grey60", "#D51F26"), 
-                             labels = c("NS", "P < 0.05"),
-                             name = "Significance") +
-          geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-          theme_classic() +
-          labs(title = paste(cell_type, "- Volcano Plot"), 
-               x = "Log Fold Change", y = "-log10(P-value)"))
-  dev.off()
+  p_volc <- plot_volcano(
+    milo_res$da_results,
+    pval_thresh = 0.05,
+    title = paste0(ct, " - Volcano Plot")
+  )
+  ggsave(file.path(cell_type_dir, "volcano_plot.png"),
+         p_volc, width = 7, height = 6, dpi = 300)
   
-  # Neighborhood graph with P-value filtering
-  png(file.path(cell_type_dir, "nhood_graph_pval.png"), width = 8, height = 8, units = "in", res = 300)
-  print(plotNhoodGraphDA_pval(obj.milo, da_results, alpha = 0.05, 
-                              use_pvalue = TRUE, layout = "UMAP"))
-  dev.off()
-  
-  ####################
-  # 12. ANNOTATE BY FINE_CLUST
-  ####################
-  
-  # Check if fine_clust exists
-  if("fine_clust" %in% colnames(colData(obj.milo))) {
-    cat("Annotating neighborhoods by fine_clust...\n")
-    da_results <- annotateNhoods(obj.milo, da_results, coldata_col = "fine_clust")
-    
-    # Copy AFTER annotation so fine_clust is present
-    da_results_plot <- da_results
-    da_results_plot$SpatialFDR <- da_results_plot$PValue  # PURELY FOR QUICK FIX AND IS BASED ON PVALUE NOT FDR
-    
-    png(file.path(cell_type_dir, "DA_beeswarm.png"), width = 10, height = 6, units = "in", res = 300)
-    print(plotDAbeeswarm(da_results_plot, group.by = "fine_clust") +
-            theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-                  axis.text.y = element_text(size = 10),
-                  axis.title = element_text(size = 12)) +
-            ggtitle(cell_type))
-    dev.off()
+  # Beeswarm by fine_clust
+  if ("fine_clust" %in% colnames(milo_res$da_results)) {
+    p_bee <- plot_da_beeswarm(
+      milo_res$da_results,
+      group_by          = "fine_clust",
+      title             = ct,
+      use_pvalue_as_fdr = TRUE
+    )
+    ggsave(file.path(cell_type_dir, "DA_beeswarm.png"),
+           p_bee, width = 10, height = 6, dpi = 300)
   }
   
-  ####################
-  # 13. EXTRACT DA CELLS
-  ####################
+  # Extract DA cells
+  cells_up <- extract_DA_cells(milo_res$milo, milo_res$da_results,
+                               alpha = 0.05, direction = "up",
+                               use_pvalue = TRUE)
+  cells_down <- extract_DA_cells(milo_res$milo, milo_res$da_results,
+                                 alpha = 0.05, direction = "down",
+                                 use_pvalue = TRUE)
   
-  cat("Extracting cells from significant neighborhoods...\n")
+  cat("  DA cells up:", length(cells_up),
+      "| DA cells down:", length(cells_down), "\n")
   
-  # Upregulated neighborhoods
-  cells_up <- extract_DA_cells(obj.milo, da_results, alpha = 0.05, 
-                               direction = "up", use_pvalue = TRUE)
-  cat("Cells in upregulated neighborhoods:", length(cells_up), "\n")
+  write.csv(data.frame(barcode = cells_up),
+            file.path(cell_type_dir, "DA_cells_upregulated.csv"),
+            row.names = FALSE)
+  write.csv(data.frame(barcode = cells_down),
+            file.path(cell_type_dir, "DA_cells_downregulated.csv"),
+            row.names = FALSE)
   
-  # Downregulated neighborhoods
-  cells_down <- extract_DA_cells(obj.milo, da_results, alpha = 0.05, 
-                                 direction = "down", use_pvalue = TRUE)
-  cat("Cells in downregulated neighborhoods:", length(cells_down), "\n")
-  
-  # Save cell lists
-  write.csv(data.frame(barcode = cells_up), 
-            file.path(cell_type_dir, "DA_cells_upregulated.csv"), row.names = FALSE)
-  write.csv(data.frame(barcode = cells_down), 
-            file.path(cell_type_dir, "DA_cells_downregulated.csv"), row.names = FALSE)
-  
-  ####################
-  # 14. SUMMARY STATS
-  ####################
-  
-  # Summary by fine_clust if available
-  if("fine_clust" %in% colnames(da_results)) {
-    summary_stats <- da_results %>%
-      group_by(fine_clust) %>%
-      summarise(
-        n_nhoods = n(),
-        n_sig_p0.05 = sum(PValue < 0.05, na.rm = TRUE),
-        n_sig_fdr0.1 = sum(SpatialFDR < 0.1, na.rm = TRUE),
-        n_up = sum(PValue < 0.05 & logFC > 0, na.rm = TRUE),
-        n_down = sum(PValue < 0.05 & logFC < 0, na.rm = TRUE),
-        mean_logFC = mean(logFC, na.rm = TRUE),
-        median_logFC = median(logFC, na.rm = TRUE)
-      ) %>%
-      arrange(desc(n_sig_p0.05))
-    
-    write.csv(summary_stats, file.path(cell_type_dir, "DA_summary_by_fineclust.csv"), row.names = FALSE)
+  # Summary stats
+  summary_stats <- summarise_da_by_cluster(milo_res$da_results,
+                                           cluster_col = "fine_clust")
+  if (!is.null(summary_stats)) {
+    write.csv(summary_stats,
+              file.path(cell_type_dir, "DA_summary_by_fineclust.csv"),
+              row.names = FALSE)
   }
   
-  ####################
-  # 15. SAVE RESULTS
-  ####################
+  # Save raw results + Milo object
+  write.csv(milo_res$da_results,
+            file.path(cell_type_dir, "milo_da_results_full.csv"),
+            row.names = FALSE)
+  saveRDS(milo_res$milo,
+          file.path(cell_type_dir, "milo_object.rds"))
   
-  write.csv(da_results, file.path(cell_type_dir, "milo_da_results_full.csv"), row.names = FALSE)
-  saveRDS(obj.milo, file.path(cell_type_dir, "milo_object.rds"))
-  
-  cat("Completed:", cell_type, "\n")
-  
-  # Clean up
-  rm(obj.sce, obj.milo, da_results)
+  # Cleanup
+  rm(obj_sub, milo_res)
   gc()
+  
+  cat("  Completed:", ct, "\n")
 }
+
+cat("\nDone. All outputs in:", output_dir, "\n")

@@ -60,11 +60,7 @@ saveRDS(obj, paste0(main_folder, "obj_harmony_integrated.rds"))
 rm(object_list)
 gc()
 
-#obj <- readRDS("obj_harmony_integrated.rds")
-
-vis_obj <- readRDS(paste0("../ubels26_hair_cycle/annotated_vis_obj.rds"))
-ImageFeaturePlot(vis_obj, features = c("NR4A2"))
-
+full_obj <- readRDS("obj_harmony_integrated.rds")
 #################################################################
 # RUNNING BROAD MARKER GENES FOR INITIAL CLUSTERIZATION
 #################################################################
@@ -184,45 +180,6 @@ Idents(obj) <- "broad_cluster"
 
 p <- DimPlot(obj, label = TRUE, repel = TRUE, label.size = 2)
 ggsave(filename = "./marker_genes/broad_cluster_annotation.png", p, width = 15, height = 10)
-
-####################################################################################
-# PLOT BROAD MARKER GENES DOTPLOT
-####################################################################################
-
-group_def <- split(
-  unique(obj$broad_cluster),
-  sub("\\.\\d+$", "", unique(obj$broad_cluster))
-)
-
-# Natural sort within each group
-group_def <- lapply(group_def, function(x) {
-  nums <- as.numeric(sub(".*\\.", "", x))
-  x[order(nums)]
-})
-
-group_def <- group_def[c("Keratinocytes","Fibroblasts","Endothelial","Immune","Remaining")]
-names(group_def) <- c("Keratinocytes","Fibroblasts","Endo","Immune","Other")
-
-p <- grouped_dotplot(
-  obj,
-  group_def = group_def,
-  gene_groups = list(
-    Keratinocytes = c("KRT5","KRT14","KRT17","KRT6A","S100A2","S100A9",
-                      "COL17A1","TP63","KRT85","KRT19"),
-    Fibroblasts   = c("PDGFRA","COL1A1","COL3A1","DCN","LUM","FAP","MME",
-                      "RGS5","PRRX1","MMP1","MMP3","VCAM1"),
-    Endo          = c("PECAM1","VWF","CDH5","CLDN5","ERG","DLL4"),
-    Immune        = c("CD3D","CD3E","PTPRC","CD14","C1QA",
-                      "TPSAB1","CPA3","LAMP3","CCR7","IDO1","IGKC","MZB1"),
-    Other         = c("MLANA","DCT","TYRP1","SOX10","CDH19","PMP2")
-  ),
-  ident_col = "broad_cluster",
-  bar_height = 1.2
-)
-
-p
-
-ggsave("./marker_genes/grouped_dotplot.pdf", p, width = 14, height = 10)
 
 saveRDS(obj, file = "./broad_annotated_obj.rds")
 
@@ -423,9 +380,21 @@ re_obj$fine_clust <- plyr::mapvalues(
 )
 
 obj$fine_clust[colnames(re_obj)] <- re_obj$fine_clust
-obj$mapping_cell_type <- sub("\\.\\d+$", "", obj$broad_cluster)
 
+
+################################################################
+# SMALL POST-HOC CORRECTIONS
+################################################################
+
+krt_reticular <- colnames(obj)[obj$fine_clust == "FBs.Reticular" & grepl("^Keratinocytes", obj$broad_cluster)]
+obj$broad_cluster[krt_reticular] <- "Fibroblasts.11"
+
+im_ds <- colnames(obj)[obj$fine_clust == "FBs.Dermal.Sheath" & grepl("^Immune", obj$broad_cluster)]
+obj$broad_cluster[im_ds] <- "Fibroblasts.12"
+
+obj$mapping_cell_type <- sub("\\.\\d+$", "", obj$broad_cluster)
 Idents(obj) <- "fine_clust"
+
 saveRDS(obj, file = "./fine_annotated_obj.rds")
 
 #################################################################
@@ -451,3 +420,9 @@ reticulate::py_install(
 reticulate::py_module_available("anndata")
 
 as.anndata(x = obj, file_path = "./", file_name = "obj_anndata.h5ad")
+
+Idents(obj) <- "broad_cluster"
+fib <- subset(obj, idents = grep("^Fibroblasts", levels(Idents(obj)), value = TRUE))
+
+Idents(fib) <- "fine_clust"
+markers <- FindAllMarkers(fib)
