@@ -33,7 +33,7 @@ library(igraph)
 
 # Source helpers
 source("./scripts/helper_functions.R")
-source("./scripts/milo_plot_helpers.R")
+source("./scripts/milo_helper_functions.R")
 
 
 ###################################################
