@@ -81,7 +81,6 @@ cell_types <- cell_types[!is.na(cell_types)]
 cat("Cell types to analyze:\n")
 print(cell_types)
 
-
 ###################################################
 # MAIN LOOP
 ###################################################
