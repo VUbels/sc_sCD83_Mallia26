@@ -187,8 +187,8 @@ result_increased <- netVisual_bubble(cellchat,
 
 # Decreased signaling
 result_decreased <- netVisual_bubble(cellchat,
-                                     sources.use = c(23,31),
-                                     targets.use = c(2,10,12,13,17,20),
+                                     sources.use = c(22,23),
+                                     targets.use = c(2,9,10,11,12,13,17,20,26,27,28),
                                      comparison = c(1, 2), 
                                      max.dataset = 1, 
                                      title.name = "Decreased signaling after sCD83", 
@@ -428,7 +428,7 @@ cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos
 
 net <- netMappingDEG(cellchat, features.name = features.name, variable.all = TRUE)
 net.up <- subsetCommunication(cellchat, net = net, datasets = "sCD83", ligand.logFC = 0.2, receptor.logFC = NULL)
-net.down <- subsetCommunication(cellchat, net = net, datasets = "PBS", ligand.logFC = -0.2, receptor.logFC = NULL)
+net.down <- subsetCommunication(cellchat, net = net, datasets = "PBS", ligand.logFC = -0.01, receptor.logFC = NULL)
 
 shared <- intersect(net.up$interaction_name, net.down$interaction_name)
 net.up <- net.up[!net.up$interaction_name %in% shared, ]
@@ -442,7 +442,7 @@ gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 21, 
 #> Comparing communications on a merged object
 
 pairLR.use.down = net.down[, "interaction_name", drop = F]
-gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = c(23), targets.use = c(3,6,8,11,14,15,21), comparison = c(1, 2),  angle.x = 90, remove.isolate = F,title.name = paste0("Down-regulated signaling in ", names(cellchat.list)[2]), font.size = 12)
+gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = c(22,23), targets.use = c(1:35), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Down-regulated signaling in ", names(cellchat.list)[2]), font.size = 12)
 
 gg1 <- clean_bubble_xaxis(gg1)
 gg2 <- clean_bubble_xaxis(gg2)
