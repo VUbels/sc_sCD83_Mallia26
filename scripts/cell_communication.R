@@ -22,7 +22,7 @@ source("./scripts/helper_functions.R")
 future::plan("sequential")
 
 main_folder <- "./"
-output_folder <- paste0("./cell_communication_results_trim/")
+output_folder <- paste0("./cell_communication_results/")
 dir.create(output_folder, showWarnings = FALSE)
 
 #cellchat <- readRDS(paste0(output_folder, "cellchat_merged.rds"))
@@ -238,7 +238,7 @@ write.csv(lr_decreased_data, paste0(output_folder, "LR_decreased_sCD83_treatment
 
 # Identify cell types with altered signaling patterns
 # Exclude common large pathways that dominate the plot
-exclude_pathways <- c("MIF", "LAMININ", "COLLAGEN")
+exclude_pathways <- c("MIF", "LAMININ", "COLLAGEN", "VISFATIN")
 
 pdf(paste0(output_folder, "Signaling_role_scatter.pdf"), width = 6, height = 6)
 for (ct in cell_types) {
@@ -348,11 +348,13 @@ pdf(paste0(output_folder, "/vln_plots/", "specific_genes_vlnplot.pdf"), width = 
 
 p <- plot_custom_expression(
   obj,
-  features = c("SPP1", "ITGB1", "ITGB3", "CD44", "ACVR1B", "CXCL12", "AREG", "TGFB1", "TGFB3"),
+  features = c("SPP1", "CD44", "ITGB1", "ITGB3", "TGFB1", "TGFB3", "ACVR1B", "CXCL12", "AREG", "FGF2", "FGF7", "FGFR1"),
   idents = c("M2.Macrophages", "Bulge", "ORS.2", "ORS.3", "ORS.Suprabasal", "FBs.DP-like","FBs.Dermal.Sheath", "FBs.Cycling", "FBs.Activated", "Mast.cells"),
   split.by = "treatment"
 )
+
 print(p)
+
 dev.off()
 
 ####################
@@ -440,7 +442,7 @@ gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 21, 
 #> Comparing communications on a merged object
 
 pairLR.use.down = net.down[, "interaction_name", drop = F]
-gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = 21, targets.use = c(2,9,10,11,12,13,17,20,26,27,28), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Down-regulated signaling in ", names(cellchat.list)[2]), font.size = 12)
+gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = c(23), targets.use = c(3,6,8,11,14,15,21), comparison = c(1, 2),  angle.x = 90, remove.isolate = F,title.name = paste0("Down-regulated signaling in ", names(cellchat.list)[2]), font.size = 12)
 
 gg1 <- clean_bubble_xaxis(gg1)
 gg2 <- clean_bubble_xaxis(gg2)

@@ -176,8 +176,8 @@ cycling_gsea <- gsea_results %>%
 
 plot_gsea_cycling(cycling_gsea, width = 3.2, height = 3, save_path = paste0(output_dir, "cycling_gsea.png"))
 
-
-
+Idents(obj) <- "fine_clust"
+markers <- FindAllMarkers(obj)
 ###################################################
 # MAIN LOOP
 ###################################################

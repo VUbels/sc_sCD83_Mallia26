@@ -2438,79 +2438,77 @@ plot_gsea_cycling <- function(results,
                               max_nes     = 3,
                               condA_color = "#272E6A",
                               condB_color = "#D51F26",
-                              ns_color    = "black",
-                              title       = "Cell cycle gene set enrichment per cluster",
-                              base_size   = 11,
-                              plot_width  = 8,
-                              plot_height = 3.5) {
+                              title       = "Cell cycle gene set enrichment",
+                              base_size   = 8,
+                              width       = 3,
+                              height      = 2.5,
+                              save_path   = NULL) {
   
   require(ggplot2)
   require(dplyr)
   
-  results <- results %>%
+  df <- results %>%
     dplyr::filter(padj < alpha) %>%
-    mutate(
+    dplyr::mutate(
       nes_capped = pmax(pmin(NES, max_nes), -max_nes),
-      sig = case_when(
+      sig = dplyr::case_when(
         NES > 0 ~ "sCD83",
         NES < 0 ~ "PBS"
       ),
       cluster = reorder(cluster, NES)
     )
   
-  if (nrow(results) == 0) {
+  if (nrow(df) == 0) {
     message("No clusters pass padj < ", alpha)
     return(NULL)
   }
   
-  p <- ggplot(results, aes(x = cluster, y = nes_capped)) +
+  p <- ggplot(df, aes(x = cluster, y = nes_capped)) +
     annotate("rect", xmin = -Inf, xmax = Inf,
              ymin = 0, ymax = max_nes,
-             fill = condA_color, alpha = 0.06) +
+             fill = condA_color, alpha = 0.05) +
     annotate("rect", xmin = -Inf, xmax = Inf,
              ymin = -max_nes, ymax = 0,
-             fill = condB_color, alpha = 0.06) +
-    geom_hline(yintercept = 0, color = "grey50", linewidth = 0.3) +
-    geom_segment(aes(x = cluster, xend = cluster,
-                     y = 0, yend = nes_capped),
-                 color = "grey60", linewidth = 0.3) +
-    geom_point(aes(color = sig), size = 3) +
+             fill = condB_color, alpha = 0.05) +
+    geom_hline(yintercept = 0, color = "grey50", linewidth = 0.2) +
+    geom_segment(aes(xend = cluster, y = 0, yend = nes_capped),
+                 color = "grey50", linewidth = 0.2) +
+    geom_point(aes(color = sig), size = 1.5) +
     scale_color_manual(
       values = c("sCD83" = condA_color, "PBS" = condB_color),
-      labels = c("sCD83" = "Increased cycling (sCD83)",
-                 "PBS"   = "Increased cycling (PBS)"),
+      labels = c("sCD83" = "sCD83 \u2191", "PBS" = "PBS \u2191"),
       name = NULL
     ) +
     scale_y_continuous(
       limits = c(-max_nes, max_nes),
-      breaks = seq(-max_nes, max_nes, by = 0.5)
+      breaks = seq(-max_nes, max_nes, by = 1)
     ) +
-    annotate("text", x = 0.5, y = max_nes - 0.1,
-             label = "Increased cycling in sCD83",
-             hjust = 1, vjust = 0, size = 3.5,
-             fontface = "italic", color = "grey30") +
-    annotate("text", x = 0.5, y = -max_nes + 0.1,
-             label = "Increased cycling in PBS",
-             hjust = 0, vjust = 0, size = 3.5,
-             fontface = "italic", color = "grey30") +
-    labs(x = NULL, y = "Normalized Enrichment Score (NES)", title = title) +
-    coord_flip() +
+    labs(x = NULL, y = "NES", title = title) +
+    coord_flip(clip = "off") +
     theme_minimal(base_size = base_size) +
     theme(
-      axis.text.y        = element_text(size = 12, face = "bold"),
-      axis.text.x        = element_text(size = 9),
-      legend.position    = "bottom",
-      panel.grid.major.x = element_line(color = "grey92", linewidth = 0.2),
-      panel.grid.minor   = element_blank(),
-      plot.title         = element_text(hjust = 0.5, face = "bold", size = 16),
-      plot.margin        = margin(5, 10, 5, 5)
+      axis.text.y         = element_text(size = 7, face = "bold"),
+      axis.text.x         = element_text(size = 6),
+      axis.title.x        = element_text(size = 7),
+      legend.position     = "bottom",
+      legend.text         = element_text(size = 6),
+      legend.key.size     = unit(0.3, "cm"),
+      legend.margin       = margin(0, 0, 0, 0),
+      legend.box.margin   = margin(-5, 0, 0, 0),
+      panel.grid.major.x  = element_line(color = "grey90", linewidth = 0.15),
+      panel.grid.major.y  = element_blank(),
+      panel.grid.minor    = element_blank(),
+      plot.title          = element_text(hjust = 0.5, face = "bold", size = 8),
+      plot.margin         = margin(2, 4, 2, 2, unit = "pt")
     )
   
-  ggsave("cycling_gsea.pdf", plot = p,
-         width = plot_width, height = plot_height, units = "in")
+  if (!is.null(save_path)) {
+    ggsave(save_path, plot = p, width = width, height = height, units = "in")
+  }
   
   return(p)
 }
+
 
 ###################################################
 # BINOMIAL CELL CYCLE ENRICHMENT TEST PER CLUSTER
