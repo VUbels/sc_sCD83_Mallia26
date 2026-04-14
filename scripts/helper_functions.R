@@ -2263,6 +2263,758 @@ plot_integration_comparison <- function(merged, group_by = "orig.ident", output_
   return(combined)
 }
 
+
+##################################################
+# PLOT CYCLING WILCOX RANKING
+##################################################
+
+plot_cycling_wilcox <- function(results,
+                                condition_a  = "sCD83",
+                                condition_b  = "PBS",
+                                cluster_col  = "fine_clust",
+                                alpha        = 0.05,
+                                max_score    = 20,
+                                condA_color  = "#272E6A",
+                                condB_color  = "#D51F26",
+                                ns_color     = "black",
+                                group_col    = NULL,
+                                group_colors = NULL,
+                                title        = "Differential cell cycle activity per cluster",
+                                base_size    = 11) {
+  
+  require(ggplot2)
+  require(dplyr)
+  
+  thresh <- -log10(alpha)
+  
+  results <- results %>%
+    mutate(
+      score = case_when(
+        delta >= 0 ~ -log10(pmax(padj, 1e-300)),
+        TRUE       ~  log10(pmax(padj, 1e-300))
+      ),
+      score_capped = pmax(pmin(score, max_score), -max_score),
+      enrichment = case_when(
+        padj < alpha & delta > 0 ~ "condA",
+        padj < alpha & delta < 0 ~ "condB",
+        TRUE                     ~ "ns"
+      )
+    )
+  
+  if (!is.null(group_col) && group_col %in% colnames(results)) {
+    results <- results %>% arrange(.data[[group_col]], .data[[cluster_col]])
+  }
+  results[[cluster_col]] <- factor(results[[cluster_col]],
+                                   levels = results[[cluster_col]])
+  
+  y_breaks <- sort(unique(c(-max_score, -15, -10, -thresh,
+                            0, thresh, 10, 15, max_score)))
+  y_breaks <- y_breaks[y_breaks >= -max_score & y_breaks <= max_score]
+  
+  y_labels <- sapply(y_breaks, function(v) {
+    if (v == 0) return(expression(1))
+    as.expression(bquote(10^{-.(abs(v))}))
+  })
+  
+  p <- ggplot(results, aes(x = .data[[cluster_col]], y = score_capped)) +
+    
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = 0, ymax = thresh,
+             fill = condA_color, alpha = 0.04) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = thresh, ymax = max_score,
+             fill = condA_color, alpha = 0.10) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = -thresh, ymax = 0,
+             fill = condB_color, alpha = 0.04) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = -max_score, ymax = -thresh,
+             fill = condB_color, alpha = 0.10) +
+    
+    geom_hline(yintercept = thresh,  linetype = "dashed",
+               color = "grey40", linewidth = 0.4) +
+    geom_hline(yintercept = -thresh, linetype = "dashed",
+               color = "grey40", linewidth = 0.4) +
+    geom_hline(yintercept = 0, color = "grey50", linewidth = 0.3) +
+    
+    geom_segment(aes(x = .data[[cluster_col]],
+                     xend = .data[[cluster_col]],
+                     y = 0, yend = score_capped),
+                 color = "grey60", linewidth = 0.25) +
+    
+    geom_point(aes(color = enrichment), size = 2.5) +
+    scale_color_manual(
+      values = c("condA" = condA_color,
+                 "condB" = condB_color,
+                 "ns"    = ns_color),
+      labels = c("condA" = paste0("Increased cycling in ", condition_a),
+                 "condB" = paste0("Increased cycling in ", condition_b),
+                 "ns"    = "Not significant"),
+      name   = NULL
+    ) +
+    
+    scale_y_continuous(
+      limits = c(-max_score, max_score),
+      breaks = y_breaks,
+      labels = y_labels
+    ) +
+    
+    annotate("text", x = 0.5, y = max_score - 0.5,
+             label = paste("Increased cycling in", condition_a),
+             hjust = 0, vjust = 1, size = 2.5,
+             fontface = "italic", color = "grey30") +
+    annotate("text", x = 0.5, y = -max_score + 0.5,
+             label = paste("Increased cycling in", condition_b),
+             hjust = 0, vjust = 0, size = 2.5,
+             fontface = "italic", color = "grey30") +
+    
+    labs(x = NULL, y = "Adjusted P value [Wilcoxon]", title = title) +
+    theme_minimal(base_size = base_size) +
+    theme(
+      axis.text.x        = element_text(angle = 45, hjust = 1, size = 9,
+                                        face = "bold"),
+      axis.text.y        = element_text(size = 8),
+      axis.title         = element_text(size = 9),
+      legend.position    = "bottom",
+      legend.text        = element_text(size = 8),
+      panel.grid.major.y = element_line(color = "grey92", linewidth = 0.2),
+      panel.grid.minor   = element_blank(),
+      plot.title         = element_text(hjust = 0.5, face = "bold", size = 12),
+      plot.margin        = margin(t = 10, r = 10, b = 30, l = 10)
+    )
+  
+  # Group color bars (same logic as original)
+  if (!is.null(group_col) && group_col %in% colnames(results)) {
+    
+    group_info <- results %>%
+      group_by(.data[[group_col]]) %>%
+      summarise(
+        xmin = as.numeric(first(.data[[cluster_col]])) - 0.4,
+        xmax = as.numeric(last(.data[[cluster_col]]))  + 0.4,
+        xmid = mean(c(as.numeric(first(.data[[cluster_col]])),
+                      as.numeric(last(.data[[cluster_col]])))),
+        .groups = "drop"
+      )
+    
+    if (is.null(group_colors)) {
+      palette <- c("#E8A0BF", "#A0C4E8", "#A8E6CF", "#FFD3B6",
+                   "#D5AAFF", "#FFE0AC", "#B5EAD7", "#C7CEEA",
+                   "#FFDAC1", "#E2F0CB")
+      group_colors <- setNames(
+        palette[seq_len(nrow(group_info))],
+        group_info[[group_col]]
+      )
+    }
+    
+    bar_y <- -max_score - 2.0
+    bar_h <- 1.2
+    
+    p <- p +
+      annotate("rect",
+               xmin = group_info$xmin, xmax = group_info$xmax,
+               ymin = bar_y - bar_h / 2, ymax = bar_y + bar_h / 2,
+               fill = group_colors[group_info[[group_col]]],
+               color = "grey30", linewidth = 0.3) +
+      annotate("text",
+               x = group_info$xmid,
+               y = bar_y,
+               label = group_info[[group_col]],
+               fontface = "bold", size = 3) +
+      coord_cartesian(
+        ylim = c(-max_score - 4, max_score),
+        clip = "off"
+      )
+  }
+  
+  return(p)
+}
+
+####################################################
+# PLOT CYCLING GENES GSEA
+####################################################
+
+plot_gsea_cycling <- function(results,
+                              alpha       = 0.05,
+                              max_nes     = 3,
+                              condA_color = "#272E6A",
+                              condB_color = "#D51F26",
+                              ns_color    = "black",
+                              title       = "Cell cycle gene set enrichment per cluster",
+                              base_size   = 11,
+                              plot_width  = 8,
+                              plot_height = 3.5) {
+  
+  require(ggplot2)
+  require(dplyr)
+  
+  results <- results %>%
+    dplyr::filter(padj < alpha) %>%
+    mutate(
+      nes_capped = pmax(pmin(NES, max_nes), -max_nes),
+      sig = case_when(
+        NES > 0 ~ "sCD83",
+        NES < 0 ~ "PBS"
+      ),
+      cluster = reorder(cluster, NES)
+    )
+  
+  if (nrow(results) == 0) {
+    message("No clusters pass padj < ", alpha)
+    return(NULL)
+  }
+  
+  p <- ggplot(results, aes(x = cluster, y = nes_capped)) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = 0, ymax = max_nes,
+             fill = condA_color, alpha = 0.06) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = -max_nes, ymax = 0,
+             fill = condB_color, alpha = 0.06) +
+    geom_hline(yintercept = 0, color = "grey50", linewidth = 0.3) +
+    geom_segment(aes(x = cluster, xend = cluster,
+                     y = 0, yend = nes_capped),
+                 color = "grey60", linewidth = 0.3) +
+    geom_point(aes(color = sig), size = 3) +
+    scale_color_manual(
+      values = c("sCD83" = condA_color, "PBS" = condB_color),
+      labels = c("sCD83" = "Increased cycling (sCD83)",
+                 "PBS"   = "Increased cycling (PBS)"),
+      name = NULL
+    ) +
+    scale_y_continuous(
+      limits = c(-max_nes, max_nes),
+      breaks = seq(-max_nes, max_nes, by = 0.5)
+    ) +
+    annotate("text", x = 0.5, y = max_nes - 0.1,
+             label = "Increased cycling in sCD83",
+             hjust = 1, vjust = 0, size = 3.5,
+             fontface = "italic", color = "grey30") +
+    annotate("text", x = 0.5, y = -max_nes + 0.1,
+             label = "Increased cycling in PBS",
+             hjust = 0, vjust = 0, size = 3.5,
+             fontface = "italic", color = "grey30") +
+    labs(x = NULL, y = "Normalized Enrichment Score (NES)", title = title) +
+    coord_flip() +
+    theme_minimal(base_size = base_size) +
+    theme(
+      axis.text.y        = element_text(size = 12, face = "bold"),
+      axis.text.x        = element_text(size = 9),
+      legend.position    = "bottom",
+      panel.grid.major.x = element_line(color = "grey92", linewidth = 0.2),
+      panel.grid.minor   = element_blank(),
+      plot.title         = element_text(hjust = 0.5, face = "bold", size = 16),
+      plot.margin        = margin(5, 10, 5, 5)
+    )
+  
+  ggsave("cycling_gsea.pdf", plot = p,
+         width = plot_width, height = plot_height, units = "in")
+  
+  return(p)
+}
+
+###################################################
+# BINOMIAL CELL CYCLE ENRICHMENT TEST PER CLUSTER
+###################################################
+
+#' Tests whether each cluster shows differential cell cycle activity
+#' between two conditions using a binomial distribution.
+#'
+#' Logic: cells in S or G2M phase are classified as "cycling." Under
+#' the null hypothesis of equal cycling rates between conditions,
+#' cycling cells within a cluster should be distributed between
+#' conditions in proportion to that cluster's overall cellular
+#' composition. Departure from this expectation indicates that one
+#' condition drives more cycling than the other.
+#'
+#' Two modes for computing the expected fraction (p):
+#'
+#'   use_global_fraction = FALSE (default):
+#'     p = n_condA_in_cluster / n_total_in_cluster
+#'     Per-cluster baseline that controls for differential abundance.
+#'     This is the recommended default: it isolates the cycling
+#'     effect from compositional differences between conditions.
+#'
+#'   use_global_fraction = TRUE:
+#'     p = total_condA_cells / total_cells (global fraction)
+#'
+#' Outlier clusters that are known to be condition-specific and large
+#' enough to skew the global baseline can be excluded from p_expected
+#' computation via exclude_clusters. This parameter is relevant when
+#' use_global_fraction = TRUE. When using per-cluster baselines, the
+#' parameter has no effect on p_expected (since each cluster's own
+#' composition is its baseline), but excluded clusters are still
+#' flagged in the output for downstream awareness.
+#'
+#' @param obj                 Seurat v5 object with cell cycle scoring
+#'                            already performed (e.g. via CellCycleScoring)
+#' @param treatment_col       Column in meta.data with two condition labels
+#' @param cluster_col         Column in meta.data with cluster identities
+#' @param sample_col          Column in meta.data with sample/replicate IDs
+#' @param phase_col           Column in meta.data with cell cycle phase
+#'                            assignments (default "Phase", as set by
+#'                            Seurat::CellCycleScoring)
+#' @param cycling_phases      Character vector of phase labels considered
+#'                            "cycling" (default c("S", "G2M"))
+#' @param condition_a         Label for condition A. If NULL, first sorted
+#'                            unique value is used.
+#' @param condition_b         Label for condition B. If NULL, second sorted
+#'                            unique value is used.
+#' @param exclude_clusters    Character vector of cluster names to exclude
+#'                            from global p_expected computation. Only
+#'                            affects results when use_global_fraction = TRUE.
+#'                            Clusters are still tested and reported.
+#' @param use_global_fraction Logical (default FALSE). If FALSE, p is the
+#'                            per-cluster fraction of condition_a cells
+#'                            (controls for differential abundance). If TRUE,
+#'                            p is the global fraction (or Joost-corrected).
+#' @param cell_counts         Named numeric vector of total isolated cells per
+#'                            sample. Only used when use_global_fraction = TRUE
+#'                            for Joost et al. cross-sample correction.
+#'                            Names must match sample_col values.
+#' @param alpha               Significance threshold (default 0.001)
+#'
+#' @return data.frame with per-cluster results including cycling counts,
+#'         cycling rates per condition, binomial p-values, and enrichment
+#'         calls. Attributes store condition labels and alpha.
+
+test_cluster_cycling_enrichment <- function(obj,
+                                            treatment_col       = "treatment",
+                                            cluster_col         = "fine_clust",
+                                            sample_col          = "orig.ident",
+                                            phase_col           = "Phase",
+                                            cycling_phases      = c("S", "G2M"),
+                                            condition_a         = NULL,
+                                            condition_b         = NULL,
+                                            exclude_clusters    = NULL,
+                                            use_global_fraction = FALSE,
+                                            cell_counts         = NULL,
+                                            alpha               = 0.001) {
+  
+  suppressPackageStartupMessages({
+    require(Seurat)
+    require(dplyr)
+  })
+  
+  if (!inherits(obj, "Seurat")) stop("`obj` must be a Seurat object.")
+  md <- obj@meta.data
+  
+  for (col in c(treatment_col, cluster_col, sample_col, phase_col)) {
+    if (!col %in% colnames(md)) {
+      stop(paste0("Column '", col, "' not found in meta.data."))
+    }
+  }
+  
+  # Validate cycling phases exist in the data
+  observed_phases <- unique(md[[phase_col]])
+  missing_phases  <- setdiff(cycling_phases, observed_phases)
+  if (length(missing_phases) > 0) {
+    warning("Cycling phase(s) not found in data: ",
+            paste(missing_phases, collapse = ", "),
+            ". Observed phases: ", paste(observed_phases, collapse = ", "))
+  }
+  
+  # Flag cycling cells
+  md$is_cycling <- md[[phase_col]] %in% cycling_phases
+  
+  # Resolve condition labels
+  conditions <- if (is.factor(md[[treatment_col]])) {
+    levels(md[[treatment_col]])
+  } else {
+    sort(unique(md[[treatment_col]]))
+  }
+  if (length(conditions) != 2) {
+    stop("Expected exactly 2 conditions in '", treatment_col,
+         "', found: ", paste(conditions, collapse = ", "))
+  }
+  if (is.null(condition_a)) condition_a <- conditions[1]
+  if (is.null(condition_b)) condition_b <- conditions[2]
+  
+  # Global baseline (only used when use_global_fraction = TRUE)
+  if (use_global_fraction) {
+    if (!is.null(exclude_clusters)) {
+      baseline_idx <- !md[[cluster_col]] %in% exclude_clusters
+      md_baseline  <- md[baseline_idx, ]
+      n_excluded   <- sum(!baseline_idx)
+      cat("Excluding", length(exclude_clusters), "cluster(s) from global baseline:",
+          paste(exclude_clusters, collapse = ", "), "\n")
+      cat("  ->", n_excluded, "cells excluded from global p_expected computation\n")
+    } else {
+      md_baseline <- md
+    }
+    
+    # Per-sample sequenced cell counts (from baseline cells only)
+    sample_tab <- md_baseline %>%
+      group_by(across(all_of(c(sample_col, treatment_col)))) %>%
+      summarise(n_seq = n(), .groups = "drop")
+    
+    samples_a <- sample_tab %>% filter(.data[[treatment_col]] == condition_a)
+    samples_b <- sample_tab %>% filter(.data[[treatment_col]] == condition_b)
+    
+    S_a <- samples_a$n_seq
+    S_b <- samples_b$n_seq
+    
+    n_total_baseline <- nrow(md_baseline)
+    n_a_baseline     <- sum(md_baseline[[treatment_col]] == condition_a)
+    
+    if (!is.null(cell_counts)) {
+      C_a <- cell_counts[samples_a[[sample_col]]]
+      C_b <- cell_counts[samples_b[[sample_col]]]
+      if (any(is.na(C_a)) || any(is.na(C_b))) {
+        stop("cell_counts names must match all sample IDs in '",
+             sample_col, "'.")
+      }
+      p_global <- (sum(S_a) * sum(C_b)) /
+        (sum(S_a) * sum(C_b) + sum(S_b) * sum(C_a))
+      cat("Mode: global fraction (Joost et al. cross-sample correction)\n")
+    } else {
+      p_global <- n_a_baseline / n_total_baseline
+      cat("Mode: global fraction",
+          if (!is.null(exclude_clusters)) "(baseline-corrected)" else "",
+          "\n")
+    }
+    cat("Global p_expected (fraction", condition_a, "):",
+        round(p_global, 4), "\n")
+  } else {
+    cat("Mode: per-cluster baseline (controls for differential abundance)\n")
+    if (!is.null(exclude_clusters)) {
+      cat("Note: exclude_clusters flagged but has no effect on per-cluster p_expected.\n",
+          "      Excluded clusters are still flagged in output.\n")
+    }
+  }
+  
+  # Summary stats
+  n_total      <- nrow(md)
+  n_cycling    <- sum(md$is_cycling)
+  n_a_total    <- sum(md[[treatment_col]] == condition_a)
+  n_b_total    <- sum(md[[treatment_col]] == condition_b)
+  n_cycling_a  <- sum(md$is_cycling & md[[treatment_col]] == condition_a)
+  n_cycling_b  <- sum(md$is_cycling & md[[treatment_col]] == condition_b)
+  
+  cat("Condition A:", condition_a, "| Condition B:", condition_b, "\n")
+  cat("Total cells:", n_total,
+      "(", condition_a, ":", n_a_total, "|",
+      condition_b, ":", n_b_total, ")\n")
+  cat("Total cycling cells:", n_cycling,
+      "(", condition_a, ":", n_cycling_a, "|",
+      condition_b, ":", n_cycling_b, ")\n")
+  cat("Global cycling rate —",
+      condition_a, ":", round(n_cycling_a / n_a_total, 4), "|",
+      condition_b, ":", round(n_cycling_b / n_b_total, 4), "\n")
+  
+  # Per-cluster binomial test
+  clusters <- sort(unique(md[[cluster_col]]))
+  
+  results <- do.call(rbind, lapply(clusters, function(cl) {
+    
+    idx    <- md[[cluster_col]] == cl
+    n      <- sum(idx)
+    n_a    <- sum(md[[treatment_col]][idx] == condition_a)
+    n_b    <- n - n_a
+    
+    # Cycling cells in this cluster
+    cycling_idx   <- idx & md$is_cycling
+    n_cyc         <- sum(cycling_idx)
+    n_cyc_a       <- sum(md[[treatment_col]][cycling_idx] == condition_a)
+    n_cyc_b       <- n_cyc - n_cyc_a
+    
+    # Cycling rates per condition within this cluster
+    rate_a <- if (n_a > 0) n_cyc_a / n_a else NA_real_
+    rate_b <- if (n_b > 0) n_cyc_b / n_b else NA_real_
+    
+    # Expected fraction of cycling cells from condition A
+    if (use_global_fraction) {
+      p_expected <- p_global
+    } else {
+      # Per-cluster: fraction of this cluster's cells from condition A
+      p_expected <- if (n > 0) n_a / n else 0.5
+    }
+    
+    # Binomial test on cycling cells
+    if (n_cyc == 0 || n_a == 0 || n_b == 0) {
+      # Degenerate case: no cycling cells, or cluster is entirely
+      # one condition — test is undefined
+      pval_a <- 1
+      pval_b <- 1
+    } else {
+      # P(X >= n_cyc_a): if small, condition A has elevated cycling
+      pval_a <- pbinom(n_cyc_a - 1, size = n_cyc, prob = p_expected,
+                       lower.tail = FALSE)
+      # P(X <= n_cyc_a): if small, condition B has elevated cycling
+      pval_b <- pbinom(n_cyc_a, size = n_cyc, prob = p_expected)
+    }
+    
+    enrichment <- "none"
+    if (pval_a < alpha) enrichment <- condition_a
+    if (pval_b < alpha) enrichment <- condition_b
+    if (pval_a < alpha && pval_b < alpha) {
+      enrichment <- ifelse(pval_a < pval_b, condition_a, condition_b)
+    }
+    
+    excluded <- cl %in% exclude_clusters
+    
+    data.frame(
+      cluster              = cl,
+      n_total              = n,
+      n_condA              = n_a,
+      n_condB              = n_b,
+      n_cycling            = n_cyc,
+      n_cycling_condA      = n_cyc_a,
+      n_cycling_condB      = n_cyc_b,
+      cycling_rate_condA   = rate_a,
+      cycling_rate_condB   = rate_b,
+      frac_cycling_condA   = if (n_cyc > 0) n_cyc_a / n_cyc else NA_real_,
+      p_expected           = p_expected,
+      pval_cycling_condA   = pval_a,
+      pval_cycling_condB   = pval_b,
+      enrichment           = enrichment,
+      excluded_from_baseline = excluded,
+      stringsAsFactors     = FALSE
+    )
+  }))
+  
+  rownames(results) <- NULL
+  attr(results, "condition_a") <- condition_a
+  attr(results, "condition_b") <- condition_b
+  attr(results, "alpha")       <- alpha
+  
+  n_a_enr <- sum(results$enrichment == condition_a)
+  n_b_enr <- sum(results$enrichment == condition_b)
+  n_none  <- sum(results$enrichment == "none")
+  cat(n_a_enr, "cluster(s) with increased cycling in", condition_a, "|",
+      n_b_enr, "cluster(s) with increased cycling in", condition_b, "|",
+      n_none, "no differential cycling (alpha =", alpha, ")\n")
+  
+  if (!is.null(exclude_clusters)) {
+    excl_res <- results %>% filter(excluded_from_baseline)
+    if (nrow(excl_res) > 0) {
+      cat("Excluded cluster results:\n")
+      for (i in seq_len(nrow(excl_res))) {
+        cat("  ", excl_res$cluster[i], ":",
+            "cycling", excl_res$n_cycling_condA[i], condition_a, "/",
+            excl_res$n_cycling_condB[i], condition_b,
+            "-> increased cycling in", excl_res$enrichment[i], "\n")
+      }
+    }
+  }
+  
+  return(results)
+}
+
+###################################################
+# CELL CYCLE ENRICHMENT PLOT (JOOST ET AL. STYLE)
+###################################################
+
+#' Creates a mirrored -log10(p-value) plot where:
+#'   - Positive y  = increased cycling in condition_a (top half)
+#'   - Negative y  = increased cycling in condition_b (bottom half)
+#'   - Background shading intensifies past significance threshold
+#'   - Dashed horizontal lines at significance cutoff
+#'   - Points colored by enrichment call
+#'   - Clusters excluded from baseline are marked with a distinct shape
+#'
+#' @param results      Output data.frame from test_cluster_cycling_enrichment()
+#' @param group_col    Optional column name in results for x-axis grouping
+#'                     with labeled color bars. Add to results before calling.
+#' @param group_colors Named vector of colors per group level. If NULL a
+#'                     default palette is used.
+#' @param alpha        Significance threshold for dashed lines
+#' @param max_score    Cap for y-axis in -log10 scale (default 20)
+#' @param condA_color  Color for condition_a cycling increase (default "#272E6A")
+#' @param condB_color  Color for condition_b cycling increase (default "#D51F26")
+#' @param ns_color     Color for non-significant points (default "black")
+#' @param title        Plot title
+#' @param base_size    Base font size for theme (default 11)
+#'
+
+plot_cycling_enrichment <- function(results,
+                                    group_col    = NULL,
+                                    group_colors = NULL,
+                                    alpha        = NULL,
+                                    max_score    = 20,
+                                    condA_color  = "#272E6A",
+                                    condB_color  = "#D51F26",
+                                    ns_color     = "black",
+                                    title        = "Differential cell cycle activity per cluster",
+                                    base_size    = 11) {
+  
+  suppressPackageStartupMessages({
+    require(ggplot2)
+    require(dplyr)
+  })
+  
+  condition_a <- attr(results, "condition_a")
+  condition_b <- attr(results, "condition_b")
+  if (is.null(alpha)) alpha <- attr(results, "alpha") %||% 0.001
+  
+  thresh <- -log10(alpha)
+  
+  # Signed enrichment score:
+  #   positive = condition A cycling fraction exceeds expected
+  #   negative = condition B cycling fraction exceeds expected
+  #
+  # Direction is determined by whether the observed fraction of
+  
+  # cycling cells from condition A exceeds p_expected.
+  results <- results %>%
+    mutate(
+      score = case_when(
+        is.na(frac_cycling_condA)           ~ 0,
+        frac_cycling_condA >= p_expected    ~ -log10(pmax(pval_cycling_condA, 1e-300)),
+        TRUE                                ~  log10(pmax(pval_cycling_condB, 1e-300))
+      ),
+      score_capped = pmax(pmin(score, max_score), -max_score),
+      point_color  = case_when(
+        enrichment == condition_a ~ "condA",
+        enrichment == condition_b ~ "condB",
+        TRUE                      ~ "ns"
+      ),
+      # Mark excluded clusters with different shape
+      point_shape = ifelse(excluded_from_baseline, "excluded", "tested")
+    )
+  
+  # Order clusters by group then name
+  if (!is.null(group_col) && group_col %in% colnames(results)) {
+    results <- results %>% arrange(.data[[group_col]], cluster)
+  }
+  results$cluster <- factor(results$cluster, levels = results$cluster)
+  
+  # Y-axis breaks and expression labels
+  y_breaks <- sort(unique(c(-max_score, -15, -10, -thresh,
+                            0, thresh, 10, 15, max_score)))
+  y_breaks <- y_breaks[y_breaks >= -max_score & y_breaks <= max_score]
+  
+  y_labels <- sapply(y_breaks, function(v) {
+    if (v == 0) return(expression(1))
+    as.expression(bquote(10^{-.(abs(v))}))
+  })
+  
+  # Base plot
+  p <- ggplot(results, aes(x = cluster, y = score_capped)) +
+    
+    # Background shading
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = 0, ymax = thresh,
+             fill = condA_color, alpha = 0.04) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = thresh, ymax = max_score,
+             fill = condA_color, alpha = 0.10) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = -thresh, ymax = 0,
+             fill = condB_color, alpha = 0.04) +
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = -max_score, ymax = -thresh,
+             fill = condB_color, alpha = 0.10) +
+    
+    # Reference lines
+    geom_hline(yintercept = thresh,  linetype = "dashed",
+               color = "grey40", linewidth = 0.4) +
+    geom_hline(yintercept = -thresh, linetype = "dashed",
+               color = "grey40", linewidth = 0.4) +
+    geom_hline(yintercept = 0, color = "grey50", linewidth = 0.3) +
+    
+    # Lollipop stems
+    geom_segment(aes(x = cluster, xend = cluster,
+                     y = 0, yend = score_capped),
+                 color = "grey60", linewidth = 0.25) +
+    
+    # Points: shape distinguishes excluded vs tested clusters
+    geom_point(aes(color = point_color, shape = point_shape), size = 2.5) +
+    scale_color_manual(
+      values = c("condA" = condA_color,
+                 "condB" = condB_color,
+                 "ns"    = ns_color),
+      labels = c("condA" = paste0("Increased cycling in ", condition_a),
+                 "condB" = paste0("Increased cycling in ", condition_b),
+                 "ns"    = "Not significant"),
+      name   = NULL
+    ) +
+    scale_shape_manual(
+      values = c("tested" = 16, "excluded" = 17),
+      labels = c("tested" = "Tested",
+                 "excluded" = "Excluded from baseline"),
+      name   = NULL
+    ) +
+    
+    # Y-axis
+    scale_y_continuous(
+      limits = c(-max_score, max_score),
+      breaks = y_breaks,
+      labels = y_labels
+    ) +
+    
+    # Direction annotations
+    annotate("text", x = 0.5, y = max_score - 0.5,
+             label = paste("Increased cycling in", condition_a),
+             hjust = 0, vjust = 1, size = 2.5,
+             fontface = "italic", color = "grey30") +
+    annotate("text", x = 0.5, y = -max_score + 0.5,
+             label = paste("Increased cycling in", condition_b),
+             hjust = 0, vjust = 0, size = 2.5,
+             fontface = "italic", color = "grey30") +
+    
+    labs(x = NULL, y = "P value [binomial]", title = title) +
+    theme_minimal(base_size = base_size) +
+    theme(
+      axis.text.x         = element_text(angle = 45, hjust = 1, size = 9,
+                                         face = "bold"),
+      axis.text.y         = element_text(size = 8),
+      axis.title          = element_text(size = 9),
+      legend.position     = "bottom",
+      legend.text         = element_text(size = 8),
+      panel.grid.major.y  = element_line(color = "grey92", linewidth = 0.2),
+      panel.grid.minor    = element_blank(),
+      plot.title          = element_text(hjust = 0.5, face = "bold",
+                                         size = 12),
+      plot.margin         = margin(t = 10, r = 10, b = 30, l = 10)
+    )
+  
+  # Group color bars below x-axis
+  if (!is.null(group_col) && group_col %in% colnames(results)) {
+    
+    group_info <- results %>%
+      group_by(.data[[group_col]]) %>%
+      summarise(
+        xmin = as.numeric(first(cluster)) - 0.4,
+        xmax = as.numeric(last(cluster))  + 0.4,
+        xmid = mean(c(as.numeric(first(cluster)),
+                      as.numeric(last(cluster)))),
+        .groups = "drop"
+      )
+    
+    if (is.null(group_colors)) {
+      palette <- c("#E8A0BF", "#A0C4E8", "#A8E6CF", "#FFD3B6",
+                   "#D5AAFF", "#FFE0AC", "#B5EAD7", "#C7CEEA",
+                   "#FFDAC1", "#E2F0CB")
+      group_colors <- setNames(
+        palette[seq_len(nrow(group_info))],
+        group_info[[group_col]]
+      )
+    }
+    
+    bar_y <- -max_score - 2.0
+    bar_h <- 1.2
+    
+    p <- p +
+      annotate("rect",
+               xmin = group_info$xmin, xmax = group_info$xmax,
+               ymin = bar_y - bar_h / 2, ymax = bar_y + bar_h / 2,
+               fill = group_colors[group_info[[group_col]]],
+               color = "grey30", linewidth = 0.3) +
+      annotate("text",
+               x = group_info$xmid,
+               y = bar_y,
+               label = group_info[[group_col]],
+               fontface = "bold", size = 3) +
+      coord_cartesian(
+        ylim = c(-max_score - 4, max_score),
+        clip = "off"
+      )
+  }
+  
+  return(p)
+}
+
+
 ###################################################
 # BINOMIAL ENRICHMENT TEST PER CLUSTER
 ###################################################

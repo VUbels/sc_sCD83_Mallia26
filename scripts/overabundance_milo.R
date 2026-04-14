@@ -31,6 +31,8 @@ library(ggplot2)
 library(patchwork)
 library(BiocParallel)
 library(igraph)
+library(DESeq2)
+library(fgsea)
 
 # Source helpers
 source("./scripts/helper_functions.R")
@@ -80,6 +82,101 @@ cell_types <- cell_types[!is.na(cell_types)]
 
 cat("Cell types to analyze:\n")
 print(cell_types)
+
+####################################################
+# DIFFERENTIAL CELL CYCLE IN POPULATIONS
+####################################################
+
+cc_gene_sets <- list(
+  S_phase   = cc.genes.updated.2019$s.genes,
+  G2M_phase = cc.genes.updated.2019$g2m.genes,
+  cycling   = c(cc.genes.updated.2019$s.genes,
+                cc.genes.updated.2019$g2m.genes)
+)
+
+obj$pb_group <- paste(obj$fine_clust, obj$orig.ident, sep = "___")
+
+pb <- AggregateExpression(
+  obj,
+  group.by      = "pb_group",
+  assays        = "RNA",
+  return.seurat = FALSE
+)$RNA
+
+
+pb_meta <- data.frame(pb_group = colnames(pb)) %>%
+  tidyr::separate(pb_group, into = c("fine_clust", "sample"),
+                  sep = "---", remove = FALSE) %>%
+  mutate(sample = gsub("-", "_", sample))
+
+sample_treatment <- obj@meta.data %>%
+  distinct(orig.ident, treatment) %>%
+  tibble::deframe()
+
+pb_meta$treatment <- sample_treatment[pb_meta$sample]
+rownames(pb_meta) <- pb_meta$pb_group
+
+stopifnot(!any(is.na(pb_meta$treatment)))
+
+
+clusters <- sort(unique(pb_meta$fine_clust))
+clusters <- clusters[clusters != "ORS.1"]
+
+
+gsea_results <- lapply(clusters, function(cl) {
+  
+  idx       <- pb_meta$fine_clust == cl
+  counts_cl <- pb[, pb_meta$pb_group[idx]]
+  meta_cl   <- pb_meta[idx, ]
+  
+  if (sum(meta_cl$treatment == "sCD83") < 2 ||
+      sum(meta_cl$treatment == "PBS") < 2) {
+    return(NULL)
+  }
+  
+  keep      <- rowSums(counts_cl >= 5) >= 2
+  counts_cl <- counts_cl[keep, ]
+  
+  dds <- DESeqDataSetFromMatrix(
+    countData = counts_cl,
+    colData   = meta_cl,
+    design    = ~ treatment
+  )
+  dds$treatment <- relevel(dds$treatment, ref = "PBS")
+  dds <- DESeq(dds, quiet = TRUE)
+  
+  res   <- results(dds, contrast = c("treatment", "sCD83", "PBS"))
+  stats <- res$stat
+  names(stats) <- rownames(res)
+  stats <- stats[!is.na(stats)]
+  
+  fgsea_res <- fgsea(
+    pathways = cc_gene_sets,
+    stats    = sort(stats, decreasing = TRUE),
+    minSize  = 10,
+    maxSize  = 500
+  )
+  
+  fgsea_res$cluster <- cl
+  return(fgsea_res)
+})
+
+gsea_results <- bind_rows(gsea_results)
+
+gsea_results %>%
+  filter(pathway == "cycling") %>%
+  arrange(padj) %>%
+  select(cluster, pathway, pval, padj, NES, size) %>%
+  as_tibble() %>%
+  print(n = Inf)
+
+cycling_gsea <- gsea_results %>%
+  filter(pathway == "cycling") %>%
+  as_tibble()
+
+plot_gsea_cycling(cycling_gsea, width = 3.2, height = 3, save_path = paste0(output_dir, "cycling_gsea.png"))
+
+
 
 ###################################################
 # MAIN LOOP
