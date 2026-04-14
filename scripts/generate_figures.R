@@ -1,17 +1,4 @@
-library(Seurat)
-library(dplyr)
-library(ggplot2)
-library(ggrepel)
-library(patchwork)
-library(ComplexHeatmap)
-library(circlize)
-library(RColorBrewer)
-library(DESeq2)
-library(tidyr)
-library(speckle)
-
 source("./scripts/helper_functions.R")
-
 
 obj <- readRDS("./fine_annotated_obj.rds")
 
@@ -53,12 +40,12 @@ p <- grouped_dotplot(
   obj,
   group_def = group_def,
   gene_groups = list(
-    Keratinocytes = c("KRT5","KRT14","KRT17","KRT6A","S100A2","S100A9",
+    Keratinocytes = c("KRT5","KRT14","KRT6A","S100A2",
                       "COL17A1","TP63","KRT85","KRT19"),
-    Fibroblasts   = c("PDGFRA","COL1A1","COL3A1","DCN","LUM","FAP","MME",
-                      "RGS5","PRRX1","MMP1","MMP3","VCAM1"),
+    Fibroblasts   = c("PDGFRA","COL3A1","DCN","LUM","FAP","MME",
+                      "RGS5","MMP1","VCAM1"),
     Endothelial          = c("PECAM1","VWF","CDH5","CLDN5","ERG","DLL4"),
-    Immune        = c("CD3D","CD3E","PTPRC","CD14","C1QA",
+    Immune        = c("CD3D","CD3E","PTPRC","CD14","MRC1",
                       "TPSAB1","CPA3","LAMP3","CCR7","IDO1","IGKC","MZB1"),
     Other         = c("MLANA","DCT","TYRP1","SOX10","CDH19","PMP2")
   ),
@@ -68,13 +55,63 @@ p <- grouped_dotplot(
 
 p
 
-ggsave("./marker_genes/grouped_dotplot.pdf", p, width = 10, height = 10)
+ggsave("./marker_genes/grouped_dotplot.png", p, width = 10, height = 10)
+
+####################################################################################
+# BROAD UMAP FOR PUBLICATION
+####################################################################################
+
+p <- plot_umap_hierarchical(
+  obj,
+  fine_cluster_col = "fine_clust",
+  broad_cluster_col = "mapping_cell_type",
+  broad_labels = broad_labels,
+  point_size = 0.5,
+  legend_width = 0.22
+)
+
+ggsave("umap_hierarchical.svg", p, width = 8, height = 8)
+
+################################################################################
+# FINE GRAINED UMAP FOR PUBLICATION
+################################################################################
+
+fine_to_broad <- setNames(obj$mapping_cell_type, obj$fine_clust)
+fine_to_broad <- fine_to_broad[!duplicated(names(fine_to_broad))]
+
+# Create group_def based on fine_clust values
+group_def <- split(names(fine_to_broad), fine_to_broad)
+
+# Reorder groups and rename
+group_def <- group_def[c("Keratinocytes","Fibroblasts","Endothelial","Immune","Remaining")]
+names(group_def) <- c("Keratinocytes","Fibroblasts","Endo","Immune","Other")
+
+p <- grouped_dotplot(
+  obj,
+  group_def = group_def,
+  gene_groups = list(
+    Keratinocytes = c("KRT5","KRT14","KRT6A","S100A2",
+                      "COL17A1","TP63","KRT85","KRT19"),
+    Fibroblasts   = c("PDGFRA","COL3A1","DCN","LUM","FAP","MME",
+                      "RGS5","MMP1","VCAM1"),
+    Endothelial          = c("PECAM1","VWF","CDH5","CLDN5","ERG","DLL4"),
+    Immune        = c("CD3D","CD3E","PTPRC","CD14","MRC1",
+                      "TPSAB1","CPA3","LAMP3","CCR7","IDO1","IGKC","MZB1"),
+    Other         = c("MLANA","DCT","TYRP1","SOX10","CDH19","PMP2")
+  ),
+  ident_col = "fine_clust",
+  bar_height = 1.2
+)
+
+p
+
+ggsave("./marker_genes/fine_grouped_dotplot.svg", p, width = 10, height = 10)
 
 ####################################################################################
 # PLOT BROAD MARKER GENES DOTPLOT
 ####################################################################################
 
-# Run the improved pipeline
+# Run DE pipeline
 results <- run_full_de_pipeline(
   seurat_obj = obj,
   condition_col = "treatment",

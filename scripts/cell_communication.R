@@ -13,6 +13,8 @@ library(ComplexHeatmap)
 library(future)
 library(reticulate)
 
+source("./scripts/helper_functions.R")
+
 ####################
 # 2. PARAMETERS
 ####################
@@ -20,7 +22,7 @@ library(reticulate)
 future::plan("sequential")
 
 main_folder <- "./"
-output_folder <- paste0("./cell_communication_results/")
+output_folder <- paste0("./cell_communication_results_trim/")
 dir.create(output_folder, showWarnings = FALSE)
 
 #cellchat <- readRDS(paste0(output_folder, "cellchat_merged.rds"))
@@ -110,7 +112,7 @@ for (cond in conditions) {
                                 nboot = 100)
   
   # Filter communications
-  cellchat <- filterCommunication(cellchat, min.cells = 10)
+  cellchat <- filterCommunication(cellchat, min.cells = 25)
   
   # Compute pathway-level communication
   cellchat <- computeCommunProbPathway(cellchat)
@@ -152,8 +154,12 @@ dev.off()
 gg1 <- rankNet(cellchat, mode = "comparison", stacked = TRUE, do.stat = TRUE)
 gg2 <- rankNet(cellchat, mode = "comparison", stacked = FALSE, do.stat = TRUE)
 
-pdf(paste0(output_folder, "pathway_ranking.pdf"), width = 12, height = 8)
-print(gg1 + gg2)
+pdf(paste0(output_folder, "pathway_ranking_stacked.pdf"), width = 4, height = 8)
+print(gg1)
+dev.off()
+
+pdf(paste0(output_folder, "pathway_ranking.pdf"), width = 4, height = 8)
+print(gg2)
 dev.off()
 
 ####################
@@ -166,7 +172,7 @@ cell_types
 # Increased signaling
 result_increased <- netVisual_bubble(cellchat,
                                      sources.use = c(21),
-                                     targets.use = c(2,10,12,13,17,20),
+                                     targets.use = c(2,9,10,11,12,13,17,20,26,27,28),
                                      comparison = c(1, 2), 
                                      max.dataset = 2, 
                                      title.name = "Increased signaling after sCD83", 
@@ -181,7 +187,7 @@ result_increased <- netVisual_bubble(cellchat,
 
 # Decreased signaling
 result_decreased <- netVisual_bubble(cellchat,
-                                     sources.use = c(21),
+                                     sources.use = c(23,31),
                                      targets.use = c(2,10,12,13,17,20),
                                      comparison = c(1, 2), 
                                      max.dataset = 1, 
@@ -257,9 +263,7 @@ dev.off()
 ####################
 
 # Analyze specific pathways of interest
-pathways_of_interest <- c("SPP1", "WNT", "PDGF", "BMP", "FGF", "EDN",
-                          "EGF", "HGF", "IGF", "IL1", "IL2", "IL6", "IL10",
-                          "IL16", "LIFR", "PTN", "TGFb", "PARs", "KIT")
+pathways_of_interest <- unique(c(cellchat@netP$PBS$pathways, cellchat@netP$sCD83$pathways))
 
 dir.create(paste0(output_folder, "/circle_plots"), showWarnings = TRUE, recursive = FALSE)
 
@@ -336,6 +340,21 @@ for (i in seq_along(pathways_of_interest)) {
   
 }
 
+#############################################################################
+# 10B. VIOLINPLOT SPECIFIC GENES
+#############################################################################
+
+pdf(paste0(output_folder, "/vln_plots/", "specific_genes_vlnplot.pdf"), width = 6, height = 6)
+
+p <- plot_custom_expression(
+  obj,
+  features = c("SPP1", "ITGB1", "ITGB3", "CD44", "ACVR1B", "CXCL12", "AREG", "TGFB1", "TGFB3"),
+  idents = c("M2.Macrophages", "Bulge", "ORS.2", "ORS.3", "ORS.Suprabasal", "FBs.DP-like","FBs.Dermal.Sheath", "FBs.Cycling", "FBs.Activated", "Mast.cells"),
+  split.by = "treatment"
+)
+print(p)
+dev.off()
+
 ####################
 # 11. OUTGOING/INCOMING SIGNALING HEATMAPS
 ####################
@@ -391,6 +410,44 @@ cellchat <- netClustering(cellchat, type = "functional")
 
 pdf(paste0(output_folder, "functional_pathway_analysis.pdf"), width = 11, height = 9)
 netVisual_embeddingPairwise(cellchat, type = "functional", label.size = 3.5)
+dev.off()
+
+pdf(paste0(output_folder, "pathway_distance_analysis.pdf"), width = 11, height = 9)
+rankSimilarity(cellchat, type = "functional")
+dev.off()
+
+
+########################################################
+# FURTHER DIFFERENTIAL PATHWAYS
+########################################################
+pos.dataset = "sCD83"
+features.name = paste0(pos.dataset, ".merged")
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.fc = 0.05, thresh.pc = 0.1, thresh.p = 0.05, group.DE.combined = FALSE) 
+
+net <- netMappingDEG(cellchat, features.name = features.name, variable.all = TRUE)
+net.up <- subsetCommunication(cellchat, net = net, datasets = "sCD83", ligand.logFC = 0.2, receptor.logFC = NULL)
+net.down <- subsetCommunication(cellchat, net = net, datasets = "PBS", ligand.logFC = -0.2, receptor.logFC = NULL)
+
+shared <- intersect(net.up$interaction_name, net.down$interaction_name)
+net.up <- net.up[!net.up$interaction_name %in% shared, ]
+net.down <- net.down[!net.down$interaction_name %in% shared, ]
+
+gene.up <- extractGeneSubsetFromPair(net.up, cellchat)
+gene.down <- extractGeneSubsetFromPair(net.down, cellchat)
+
+pairLR.use.up = net.up[, "interaction_name", drop = F]
+gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 21, targets.use = c(2,9,10,11,12,13,17,20,26,27,28), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Up-regulated signaling in ", names(cellchat.list)[2]), show.legend = FALSE, font.size = 12)
+#> Comparing communications on a merged object
+
+pairLR.use.down = net.down[, "interaction_name", drop = F]
+gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = 21, targets.use = c(2,9,10,11,12,13,17,20,26,27,28), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Down-regulated signaling in ", names(cellchat.list)[2]), font.size = 12)
+
+gg1 <- clean_bubble_xaxis(gg1)
+gg2 <- clean_bubble_xaxis(gg2)
+
+# Comparing communications on a merged object
+pdf(paste0(output_folder, "differential_pairs_analysis.pdf"), width = 12, height = 7)
+wrap_plots(gg1, gg2, nrow = 1)
 dev.off()
 
 ####################

@@ -139,8 +139,6 @@ plot_marker_genes(obj = obj,
                   show_labels = TRUE
 )
 
-
-
 #################################################################
 # ASSIGN BROAD MARKER IDENTIFICATION TO CLUSTERS
 #################################################################

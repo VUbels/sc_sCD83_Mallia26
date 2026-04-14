@@ -73,7 +73,7 @@ for (i in seq_along(object.list)) {
   obj <- object.list[[i]]
   
   # Standard QC thresholds - adjust based on your data
-  obj <- subset(obj, subset = nFeature_RNA > 200 & nFeature_RNA < 7000 & percent.mt < 30)
+  obj <- subset(obj, subset = nFeature_RNA > 200 & nFeature_RNA < 7000 & percent.mt < 30, nCount_RNA > 1000, nCount_RNA < 50000)
   
   object.list[[i]] <- obj
   cat("Remaining cells after initial QC for", unique(obj$orig.ident), "is", ncol(obj), "cells\n")

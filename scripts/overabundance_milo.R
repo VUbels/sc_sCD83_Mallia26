@@ -1,11 +1,11 @@
 #!/usr/bin/env Rscript
 
-# =============================================================================
+##############################################################################
 # Milo DA Pipeline with Consistent Seurat-Based Embeddings
-# =============================================================================
+##############################################################################
 # Per mapping_cell_type:
 #   - Subset Seurat object
-#   - cluster_subcluster() -> PCA + UMAP in Seurat
+#   - subcluster_for_milo() -> PCA + UMAP in Seurat (lightweight, no SCTransform)
 #   - Plot split UMAP and single UMAP from the Seurat reduction
 #   - Convert to SCE, inject the Seurat PCA + UMAP into reducedDim
 #   - Build Milo on the SAME PCA -> DA testing
@@ -19,7 +19,8 @@
 # graph all share identical coordinates.
 #
 # Assumes Seurat v5 (layers, not assays).
-# =============================================================================
+# Input object is already annotated with SCT layer from prior processing.
+##############################################################################
 
 library(Seurat)
 library(miloR)
@@ -33,12 +34,11 @@ library(igraph)
 
 # Source helpers
 source("./scripts/helper_functions.R")
-source("./scripts/milo_helper_functions.R")
-
 
 ###################################################
 # PARAMETERS
 ###################################################
+options(future.globals.maxSize = 8 * 1024^3) 
 
 main_folder <- "./"
 input_file  <- paste0(main_folder, "fine_annotated_obj.rds")
@@ -46,14 +46,14 @@ output_dir  <- file.path(main_folder, "milo_results/")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Subclustering parameters per cell type.
-# These match the clustering script and control Seurat PCA dims.
+# Only dims is needed - subcluster_for_milo() handles the rest.
 # The same dims are passed to Milo's buildGraph(d = ...).
 subcluster_params <- list(
-  Keratinocytes = list(dims = 1:30),
-  Fibroblasts   = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
-  Immune        = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
-  Endothelial   = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE),
-  Remaining     = list(dims = 1:20, n_genes = 2000, features = 2000, conserve.memory = FALSE)
+  Keratinocytes = list(dims = 1:30, resolution = 0.4),
+  Fibroblasts   = list(dims = 1:20, resolution = 0.5),
+  Immune        = list(dims = 1:20, resolution = 0.7),
+  Endothelial   = list(dims = 1:20, resolution = 0.1),
+  Remaining     = list(dims = 1:20, resolution = 0.1)
 )
 
 
@@ -86,9 +86,6 @@ print(cell_types)
 # MAIN LOOP
 ###################################################
 
-bpparam <- SerialParam()
-register(bpparam)
-
 for (ct in cell_types) {
   
   cat("\n", paste(rep("=", 60), collapse = ""), "\n")
@@ -102,19 +99,22 @@ for (ct in cell_types) {
   obj_sub <- subset(obj, subset = mapping_cell_type == ct)
   cat("Cells:", ncol(obj_sub), "\n")
   
-  # Subcluster: Seurat PCA + UMAP.
+  # Subcluster: Seurat PCA + UMAP with full SCTransform pipeline.
   # After this, obj_sub has "pca" and "umap" reductions.
   # These are THE reductions used everywhere downstream.
   params <- subcluster_params[[ct]]
   if (!is.null(params)) {
-    obj_sub <- do.call(
-      cluster_subcluster,
-      c(list(obj_sub, output_dir = cell_type_dir), params)
+    obj_sub <- subcluster_for_milo(
+      obj_sub,
+      output_dir = cell_type_dir,
+      dims = params$dims,
+      resolution = if (!is.null(params$resolution)) params$resolution else 0.5,
+      nfeatures = if (!is.null(params$nfeatures)) params$nfeatures else 2000
     )
   } else {
-    cat("  No preset params for", ct, "-- using defaults (dims 1:20)\n")
-    obj_sub <- cluster_subcluster(obj_sub, output_dir = cell_type_dir, dims = 1:20)
-    params <- list(dims = 1:20)
+    cat("  No preset params for", ct, "-- using defaults (dims 1:20, res 0.5)\n")
+    obj_sub <- subcluster_for_milo(obj_sub, output_dir = cell_type_dir, dims = 1:20, resolution = 0.5)
+    params <- list(dims = 1:20, resolution = 0.5)
   }
   
   # Split UMAP from Seurat
@@ -123,7 +123,7 @@ for (ct in cell_types) {
     split_by  = "treatment",
     color_by  = "fine_clust",
     reduction = "umap",
-    pt_size   = 0.3,
+    pt_size   = 1,
     title     = paste0(ct, " | ", ncol(obj_sub), " cells")
   )
   ggsave(file.path(cell_type_dir, "UMAP_split_treatment.png"),
@@ -134,7 +134,7 @@ for (ct in cell_types) {
     obj_sub,
     color_by  = "fine_clust",
     reduction = "umap",
-    pt_size   = 0.3,
+    pt_size   = 1,
     title     = paste0(ct, " | ", ncol(obj_sub), " cells")
   )
   ggsave(file.path(cell_type_dir, "UMAP_fine_clust.png"),
@@ -145,7 +145,7 @@ for (ct in cell_types) {
     obj_sub,
     color_by  = "treatment",
     reduction = "umap",
-    pt_size   = 0.3,
+    pt_size   = 1,
     title     = paste0(ct, " | Treatment")
   )
   ggsave(file.path(cell_type_dir, "UMAP_treatment.png"),
@@ -175,25 +175,47 @@ for (ct in cell_types) {
     milo_res$milo,
     milo_res$da_results,
     alpha  = 0.05,
-    layout = "UMAP",
     title  = paste0(ct, " | Milo DA")
   )
   ggsave(file.path(cell_type_dir, "nhood_graph_DA.png"),
          p_milo, width = 8, height = 8, dpi = 300)
   
-  # Nhood graph with p-value filtering
-  png(file.path(cell_type_dir, "nhood_graph_pval.png"),
-      width = 8, height = 8, units = "in", res = 300)
-  print(plotNhoodGraphDA_pval(milo_res$milo, milo_res$da_results,
-                              alpha = 0.05, use_pvalue = TRUE,
-                              layout = "UMAP"))
-  dev.off()
+  # Nhood graph with p-value filtering (capture as ggplot object)
+  p_milo_pval <- plot_nhood_umap(
+    milo_res$milo, 
+    milo_res$da_results,
+    alpha = 0.05, 
+    use_pvalue = TRUE,
+    layout = "UMAP"
+  )
+  ggsave(file.path(cell_type_dir, "nhood_graph_pval.png"),
+         p_milo_pval, width = 7, height = 5, dpi = 300)
   
-  # Compose: [Split UMAP] | [Milo DA graph]
-  p_row <- compose_row(p_split, p_milo, widths = c(3, 2),
-                       row_label = ct)
-  ggsave(file.path(cell_type_dir, "combined_umap_milo.png"),
-         p_row, width = 16, height = 6, dpi = 300)
+  # Beeswarm by fine_clust
+  p_bee <- NULL
+  if ("fine_clust" %in% colnames(milo_res$da_results)) {
+    p_bee <- plot_da_beeswarm_ordered(
+      milo_res$da_results,
+      group_by          = "fine_clust",
+      title             = NULL,
+      use_pvalue_as_fdr = TRUE
+    )
+    ggsave(file.path(cell_type_dir, "DA_beeswarm.png"),
+           p_bee, width = 7, height = 6, dpi = 300)
+  }
+  
+  
+  # Compose 3-panel figure: [Split UMAP] | [Milo pval] | [Beeswarm]
+  if (!is.null(p_bee)) {
+    p_combined <- (p_split | p_milo_pval | p_bee) +
+      plot_layout(widths = c(2, 1, 1.5))
+  } else {
+    p_combined <- (p_split | p_milo | p_milo_pval) +
+      plot_layout(widths = c(2, 1, 2))
+  }
+  
+  ggsave(file.path(cell_type_dir, "combined_umap_milo_beeswarm.svg"),
+         p_combined, width = 20, height = 6, dpi = 330)
   
   # Neighbourhood size histogram
   p_nhood <- plot_nhood_size_hist(
@@ -219,18 +241,6 @@ for (ct in cell_types) {
   )
   ggsave(file.path(cell_type_dir, "volcano_plot.png"),
          p_volc, width = 7, height = 6, dpi = 300)
-  
-  # Beeswarm by fine_clust
-  if ("fine_clust" %in% colnames(milo_res$da_results)) {
-    p_bee <- plot_da_beeswarm(
-      milo_res$da_results,
-      group_by          = "fine_clust",
-      title             = ct,
-      use_pvalue_as_fdr = TRUE
-    )
-    ggsave(file.path(cell_type_dir, "DA_beeswarm.png"),
-           p_bee, width = 10, height = 6, dpi = 300)
-  }
   
   # Extract DA cells
   cells_up <- extract_DA_cells(milo_res$milo, milo_res$da_results,

@@ -1,3 +1,17 @@
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(grid)
+library(ggrepel)
+library(patchwork)
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(DESeq2)
+library(tidyr)
+library(speckle)
+
 ###################################################
 # SIMPLE FUNCTION TO PLOT QC METRICS FOR ALL DATA
 ###################################################
@@ -132,6 +146,74 @@ filter_doublets <- function(object_list) {
   return(object_list)
 }
 
+##############################################################
+# BLACKLIST GENES FOR VARIABLE FEATURES
+##############################################################
+
+get_blacklist_genes <- function(seurat_obj, remove_cc_genes = FALSE) {
+  
+  allGenes <- rownames(seurat_obj)
+  
+  # Mitochondrial
+  mt.genes <- grep(pattern = "^MT-", x = allGenes, value = TRUE)
+  
+  # Ribosomal
+  RPS.genes <- grep(pattern = "^RPS", x = allGenes, value = TRUE)
+  RPL.genes <- grep(pattern = "^RPL", x = allGenes, value = TRUE)
+  
+  # X/Y chromosome genes - attempt DB lookup, fall back to pattern matching
+  sexChr.genes <- tryCatch({
+    library(GenomicFeatures)
+    library(org.Hs.eg.db)
+    library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+    
+    txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+    geneGR <- GenomicFeatures::genes(txdb)
+    sexGenesGR <- geneGR[seqnames(geneGR) %in% c("chrY", "chrX")]
+    matchedGeneSymbols <- AnnotationDbi::select(org.Hs.eg.db,
+                                                keys = sexGenesGR$gene_id,
+                                                columns = c("ENTREZID", "SYMBOL"),
+                                                keytype = "ENTREZID")
+    message("Sex chromosome genes retrieved from TxDb")
+    matchedGeneSymbols$SYMBOL
+  }, error = function(e) {
+    message("TxDb unavailable, using pattern-based sex chromosome filtering")
+    grep(pattern = "^XIST$|^TSIX$|^RPS4Y|^DDX3Y|^USP9Y|^UTY$|^KDM5D|^EIF1AY|^ZFY$|^SRY$|^NLGN4Y",
+         x = allGenes, value = TRUE)
+  })
+  
+  
+  s.genes <- character(0)
+  g2m.genes <- character(0)
+  
+  # Cell cycle genes
+  if (remove_cc_genes == TRUE) {
+  s.genes <- cc.genes$s.genes
+  g2m.genes <- cc.genes$g2m.genes
+  }  
+    
+  blacklist.genes <- unique(c(
+    mt.genes,
+    sexChr.genes,
+    s.genes,
+    g2m.genes,
+    RPS.genes,
+    RPL.genes
+  ))
+  
+  # Only return genes present in the data
+  blacklist.genes <- blacklist.genes[blacklist.genes %in% allGenes]
+  
+  message(paste("Blacklisted", length(blacklist.genes), "genes",
+                "(MT:", length(mt.genes),
+                "RPL:", length(RPL.genes),
+                "RPS:", length(RPS.genes),
+                "Sex:", length(intersect(sexChr.genes, allGenes)),
+                "CC:", length(intersect(c(s.genes, g2m.genes), allGenes)), ")"))
+  
+  return(blacklist.genes)
+}
+
 ###############################################################
 # SIMPLE CLUSTERIZATION FOR SUBCLUSTERS
 ###############################################################
@@ -141,6 +223,7 @@ cluster_subcluster <- function(obj, output_dir, n_genes = 2000, features = 2000,
   library(GenomicFeatures)
   library(TxDb.Hsapiens.UCSC.hg38.knownGene)
   library(clustree)
+  library(glmGamPoi)
   
   s.genes <- cc.genes$s.genes
   g2m.genes <- cc.genes$g2m.genes
@@ -158,6 +241,7 @@ cluster_subcluster <- function(obj, output_dir, n_genes = 2000, features = 2000,
     vars.to.regress = c("percent.mt", "percent.ribo", "CC.Difference"), 
     variable.features.n = 2000,
     conserve.memory = FALSE,
+    method = "glmGamPoi",
     seed.use = 123
     
   )
@@ -344,73 +428,6 @@ plot_marker_genes <- function(obj,
     })
   }
 }
-
-#############################################
-# CELL FILTERING FUNCTION
-#############################################
-
-filter_cells <- function(
-    seurat_obj,
-    clusters_to_remove = NULL,
-    cluster_col = "fine_clust",
-    cells_to_remove = NULL,
-    verbose = TRUE
-) {
-  
-  n_before <- ncol(seurat_obj)
-  
-  if (verbose) {
-    message("\n========== CELL FILTERING ==========")
-    message(paste0("Cells before filtering: ", n_before))
-  }
-  
-  cells_to_exclude <- character(0)
-  
-  if (!is.null(clusters_to_remove) && length(clusters_to_remove) > 0) {
-    
-    if (!cluster_col %in% colnames(seurat_obj@meta.data)) {
-      stop(paste0("Column '", cluster_col, "' not found in metadata.\nAvailable columns: ",
-                  paste(colnames(seurat_obj@meta.data), collapse = ", ")))
-    }
-    
-    if (verbose) {
-      message(paste0("\nFiltering column: ", cluster_col))
-      message("Distribution before filtering:")
-      cluster_counts <- table(seurat_obj@meta.data[[cluster_col]])
-      for (cl in names(cluster_counts)) {
-        marker <- ifelse(cl %in% clusters_to_remove, " [REMOVING]", "")
-        message(paste0("  ", cl, ": ", cluster_counts[cl], " cells", marker))
-      }
-    }
-    
-    cells_in_clusters <- colnames(seurat_obj)[seurat_obj@meta.data[[cluster_col]] %in% clusters_to_remove]
-    cells_to_exclude <- c(cells_to_exclude, cells_in_clusters)
-  }
-  
-  if (!is.null(cells_to_remove) && length(cells_to_remove) > 0) {
-    cells_found <- cells_to_remove[cells_to_remove %in% colnames(seurat_obj)]
-    cells_to_exclude <- c(cells_to_exclude, cells_found)
-  }
-  
-  cells_to_exclude <- unique(cells_to_exclude)
-  
-  if (length(cells_to_exclude) > 0) {
-    cells_to_keep <- setdiff(colnames(seurat_obj), cells_to_exclude)
-    seurat_obj <- subset(seurat_obj, cells = cells_to_keep)
-  }
-  
-  n_after <- ncol(seurat_obj)
-  
-  if (verbose) {
-    message(paste0("\n--- Filtering Summary ---"))
-    message(paste0("Cells removed: ", n_before - n_after))
-    message(paste0("Cells remaining: ", n_after))
-    message("=========================================\n")
-  }
-  
-  return(seurat_obj)
-}
-
 
 #############################################
 # CELL FILTERING FUNCTION
@@ -955,7 +972,7 @@ create_volcano_plot <- function(
   # Cap extreme log2FC
   if (cap_logfc) {
     logfc_upper <- quantile(abs(de_df$avg_log2FC), logfc_cap_quantile, na.rm = TRUE)
-    logfc_cap <- max(logfc_upper, logfc_thresh * 2)
+    logfc_cap <- max(logfc_upper, logfc_thresh * 2.5)
     de_df <- de_df %>%
       dplyr::mutate(
         is_logfc_capped = abs(avg_log2FC) > logfc_cap,
@@ -1019,7 +1036,7 @@ create_volcano_plot <- function(
       alpha = 0.7, size = 1.5, shape = 17
     ) +
     scale_color_manual(
-      values = c("Up" = "#D51F26", "Down" = "#272E6A", "NS" = "grey70"),
+      values = c("Up" = "#00BEC4", "Down" = "#F8766C", "NS" = "grey70"),
       labels = c(
         "Up" = paste0("Up (", n_up, ")"),
         "Down" = paste0("Down (", n_down, ")"),
@@ -1031,7 +1048,7 @@ create_volcano_plot <- function(
     geom_text_repel(
       data = top_genes,
       aes(label = gene),
-      size = 2.5,
+      size = 4,
       max.overlaps = 30,
       segment.color = "grey50",
       segment.alpha = 0.6,
@@ -1051,10 +1068,10 @@ create_volcano_plot <- function(
     ) +
     theme_classic() +
     theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
-      plot.subtitle = element_text(hjust = 0.5, size = 8, color = "grey40"),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 15),
+      plot.subtitle = element_text(hjust = 0.5, size = 10, color = "grey40"),
       legend.position = "top",
-      plot.caption = element_text(hjust = 0, size = 8, color = "grey40")
+      plot.caption = element_text(hjust = 0, size = 10, color = "grey40")
     )
   
   max_x <- max(abs(de_df$avg_log2FC_plot), na.rm = TRUE) * 1.05
@@ -1250,7 +1267,7 @@ plot_method_concordance <- function(
 
 
 #############################################
-# MAIN WRAPPER FUNCTION
+# MAIN DE WRAPPER FUNCTION
 #############################################
 
 run_full_de_pipeline <- function(
@@ -1397,7 +1414,7 @@ run_full_de_pipeline <- function(
   }
   
   #############################################
-  # Step 4: Generate plots
+  # GENERATE DE PLOTS
   #############################################
   
   all_plots <- list()
@@ -1447,7 +1464,7 @@ run_full_de_pipeline <- function(
   ggsave(file.path(output_dir, "Global_density.pdf"), density_global, width = 6, height = 5)
   combined_global <- density_global + volcano_global + plot_layout(ncol = 2)
   ggsave(file.path(output_dir, "Global_density_volcano.pdf"), combined_global, width = 12, height = 5)
-  ggsave(file.path(output_dir, "Global_density_volcano.png"), combined_global, width = 12, height = 5, dpi = 150)
+  ggsave(file.path(output_dir, "Global_density_volcano.png"), combined_global, width = 12, height = 5, dpi = 330)
   
   if (!is.null(heatmap_global)) {
     pdf(file.path(output_dir, "Global_heatmap.pdf"), width = 10, height = 8)
@@ -2668,4 +2685,910 @@ plot_enrichment <- function(results,
   }
   
   return(p)
+}
+
+###############################################################
+# SUBCLUSTER FOR MILO PIPELINE (LIGHTWEIGHT)
+# Use when input is already annotated with SCT layer
+###############################################################
+
+subcluster_for_milo <- function(obj, output_dir, dims = 1:30, resolution = 0.5, nfeatures = 2000) {
+  
+  library(Seurat)
+  library(GenomicFeatures)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(glmGamPoi)
+  
+  # Cell cycle genes
+  s.genes <- cc.genes$s.genes
+  g2m.genes <- cc.genes$g2m.genes
+  
+  # QC metrics
+  obj <- PercentageFeatureSet(obj, pattern = "^MT-", col.name = "percent.mt")
+  obj <- PercentageFeatureSet(obj, pattern = "^RP[LS]", col.name = "percent.ribo")
+  
+  # Normalize and score cell cycle
+  obj <- NormalizeData(obj, verbose = FALSE)
+  obj <- CellCycleScoring(obj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+  obj$CC.Difference <- obj$S.Score - obj$G2M.Score
+  
+  # SCTransform with regression
+  obj <- SCTransform(
+    obj,
+    n_genes = nfeatures,
+    vars.to.regress = c("percent.mt", "percent.ribo", "CC.Difference"),
+    variable.features.n = nfeatures,
+    conserve.memory = FALSE,
+    method = "glmGamPoi",
+    seed.use = 123,
+    verbose = FALSE
+  )
+  
+  # Remove blacklist genes from variable features
+  if (exists("get_blacklist_genes", mode = "function")) {
+    blacklist <- get_blacklist_genes(obj)
+    var_feats <- VariableFeatures(obj)
+    VariableFeatures(obj) <- setdiff(var_feats, blacklist)
+    message(paste("Variable features:", length(var_feats), "->",
+                  length(VariableFeatures(obj)),
+                  "(removed", length(intersect(var_feats, blacklist)), "blacklisted)"))
+  }
+  
+  # PCA, UMAP, clustering
+  obj <- RunPCA(obj, features = VariableFeatures(obj), seed.use = 123, verbose = FALSE)
+  obj <- RunUMAP(obj, dims = dims, seed.use = 123, verbose = FALSE)
+  obj <- FindNeighbors(obj, dims = dims, verbose = FALSE)
+  obj <- FindClusters(obj, resolution = resolution, algorithm = 1, verbose = FALSE)
+  return(obj)
+}
+###############################################################
+# ADAPTIVE MILO PARAMETERS BASED ON DATASET SIZE
+###############################################################
+
+get_milo_params <- function(n_cells, n_samples) {
+  
+  # Select k, prop for Milo based on dataset size.
+  
+  # Returns a named list with k and prop.
+  # Note: d (PCA dims) is set separately via subcluster_params in main script.
+  
+  
+  if (n_cells < 5000) {
+    list(k = 20, prop = 0.2)
+  } else if (n_cells < 10000) {
+    list(k = 30, prop = 0.1)
+  } else if (n_cells < 20000) {
+    list(k = 30, prop = 0.1)
+  } else {
+    list(k = 40, prop = 0.1)
+  }
+}
+
+###############################################################
+# RUN MILO PIPELINE
+###############################################################
+
+run_milo_pipeline <- function(obj_sub,
+                              k             = 50,
+                              d             = 50,
+                              prop          = 0.1,
+                              sample_col    = "orig.ident",
+                              treatment_col = "treatment",
+                              pca_name      = "pca",
+                              umap_name     = "umap") {
+  
+  DefaultAssay(obj_sub) <- "RNA"
+  obj.sce <- as.SingleCellExperiment(obj_sub)
+  
+  # MiloR needs a logcounts assay. The Seurat→SCE conversion should
+  # produce one from the RNA "data" layer, but if it's missing, add it.
+  if (!"logcounts" %in% assayNames(obj.sce)) {
+    cat("  logcounts missing — running logNormCounts...\n")
+    obj.sce <- scuttle::logNormCounts(obj.sce)
+  }
+  
+  # Inject Seurat reductions
+  seurat_pca  <- Embeddings(obj_sub, reduction = pca_name)
+  seurat_umap <- Embeddings(obj_sub, reduction = umap_name)
+  
+  # Cap d to available PCA components
+  if (ncol(seurat_pca) < d) {
+    d <- ncol(seurat_pca)
+    cat("  PCA has", ncol(seurat_pca), "components — using d =", d, "\n")
+  }
+  
+  reducedDim(obj.sce, "PCA")  <- seurat_pca[, 1:d]
+  reducedDim(obj.sce, "UMAP") <- seurat_umap
+  
+  # Build Milo
+  cat("  Building Milo object...\n")
+  obj.milo <- Milo(obj.sce)
+  obj.milo <- buildGraph(obj.milo, k = k, d = d, reduced.dim = "PCA")
+  obj.milo <- makeNhoods(obj.milo, prop = prop, k = k, d = d,
+                         refined = TRUE, reduced_dims = "PCA")
+  
+  cat("  Neighborhoods:", ncol(nhoods(obj.milo)),
+      " | Mean size:", round(mean(colSums(nhoods(obj.milo))), 1), "\n")
+  
+  # Count + distances
+  obj.milo <- countCells(obj.milo,
+                         meta.data = data.frame(colData(obj.milo)),
+                         samples   = sample_col)
+  obj.milo <- calcNhoodDistance(obj.milo, d = d, reduced.dim = "PCA")
+  
+  # Design matrix
+  sample_meta <- colData(obj.milo) %>%
+    as.data.frame() %>%
+    dplyr::select(all_of(c(sample_col, treatment_col))) %>%
+    distinct()
+  
+  design_matrix <- data.frame(
+    Sample    = sample_meta[[sample_col]],
+    Treatment = sample_meta[[treatment_col]]
+  )
+  rownames(design_matrix) <- design_matrix$Sample
+  design_matrix <- design_matrix[colnames(nhoodCounts(obj.milo)), ]
+  
+  cat("  Design matrix:\n")
+  print(design_matrix)
+  
+  # DA testing
+  cat("  Testing for DA...\n")
+  da_results <- testNhoods(obj.milo,
+                           norm.method = "RLE",
+                           design    = ~ Treatment,
+                           design.df = design_matrix)
+  
+  cat("  Sig neighborhoods (P < 0.05):",
+      sum(da_results$PValue < 0.05, na.rm = TRUE),
+      "| Up:", sum(da_results$PValue < 0.05 & da_results$logFC > 0, na.rm = TRUE),
+      "| Down:", sum(da_results$PValue < 0.05 & da_results$logFC < 0, na.rm = TRUE), "\n")
+  
+  # Nhood graph + annotate
+  obj.milo <- buildNhoodGraph(obj.milo)
+  
+  if ("fine_clust" %in% colnames(colData(obj.milo))) {
+    da_results <- annotateNhoods(obj.milo, da_results,
+                                 coldata_col = "fine_clust")
+  }
+  
+  return(list(milo = obj.milo, da_results = da_results))
+}
+
+################################################################################
+# MILO DA NEIGHBOURHOOD GRAPH
+################################################################################
+
+#' layout="UMAP" pulls from the same reducedDim injected from Seurat.
+plot_milo_da <- function(milo_obj, da_results, alpha = 0.05, title = NULL) {
+  
+  p <- plotNhoodGraphDA(milo_obj, da_results, layout = "UMAP", alpha = alpha)
+  if (!is.null(title)) p <- p + ggtitle(title)
+  
+  p + theme_void(base_size = 11) +
+    theme(
+      plot.title   = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.title = element_text(size = 9),
+      legend.text  = element_text(size = 8)
+    )
+}
+
+
+################################################################################
+# PLOT SPLIT UMAP FOR MILO PIPELINE
+################################################################################
+#'
+#' Uses the same UMAP reduction that was injected into the Milo object.
+#'
+#' @param obj_sub   Seurat object (already has UMAP from cluster_subcluster)
+#' @param split_by  Facet column (default "treatment")
+#' @param color_by  Color column (default "fine_clust")
+#' @param reduction Reduction name (default "umap")
+#' @param pt_size   Point size (default 0.4)
+#' @param title     Plot title
+#' @return ggplot
+plot_split_umap <- function(obj_sub,
+                            split_by  = "treatment",
+                            color_by  = "fine_clust",
+                            reduction = "umap",
+                            pt_size   = 0.4,
+                            title     = NULL) {
+  
+  emb <- Embeddings(obj_sub, reduction = reduction)
+  df  <- data.frame(
+    UMAP_1    = emb[, 1],
+    UMAP_2    = emb[, 2],
+    split_var = obj_sub@meta.data[[split_by]],
+    color_var = obj_sub@meta.data[[color_by]],
+    stringsAsFactors = FALSE
+  )
+  
+  set.seed(42)
+  df <- df[sample(nrow(df)), ]
+  
+  if (is.null(title)) title <- paste0(ncol(obj_sub), " cells")
+  
+  ggplot(df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+    geom_point(size = pt_size, stroke = 0) +
+    facet_wrap(~ split_var, ncol = 2) +
+    labs(title = title, color = color_by) +
+    theme_void(base_size = 11) +
+    theme(
+      plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
+      strip.text      = element_text(face = "bold", size = 12),
+      legend.position = "right",
+      legend.title    = element_text(size = 9),
+      legend.text     = element_text(size = 8),
+      legend.key.size = unit(0.35, "cm")
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 3)))
+}
+
+############################################################################
+# PLOT ORDERED DA BEESWARM (CLEANED UP)
+############################################################################
+
+plot_da_beeswarm_ordered <- function(da_results, 
+                                     group_by = "fine_clust",
+                                     title = NULL,
+                                     alpha = 0.05,
+                                     use_pvalue_as_fdr = FALSE,
+                                     pt_size = 1.5) {
+  
+  library(ggplot2)
+  library(ggbeeswarm)
+  
+  df <- as.data.frame(da_results)
+  
+  # Determine significance column
+  if (use_pvalue_as_fdr) {
+    df$sig <- df$PValue < alpha
+  } else {
+    df$sig <- df$SpatialFDR < alpha
+  }
+  
+  # Reorder: non-significant first, significant last (plotted on top)
+  df <- df[order(df$sig, decreasing = FALSE), ]
+  
+  # Handle missing group column
+  if (!group_by %in% colnames(df)) {
+    warning(paste0("Column '", group_by, "' not found. Using NhoodGroup if available."))
+    if ("NhoodGroup" %in% colnames(df)) {
+      group_by <- "NhoodGroup"
+    } else {
+      df$group <- "All"
+      group_by <- "group"
+    }
+  }
+  
+  p <- ggplot(df, aes(x = .data[[group_by]], y = logFC, color = sig)) +
+    geom_quasirandom(size = pt_size, alpha = 0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    scale_color_manual(
+      values = c("TRUE" = "red", "FALSE" = "grey70"),
+      labels = c("TRUE" = paste0("p < ", alpha), "FALSE" = "NS"),
+      name = NULL
+    ) +
+    labs(
+      x = NULL,
+      y = "Log Fold Change",
+      title = title
+    ) +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.text.x    = element_text(angle = 45, hjust = 1, size = 10, face = "bold"),
+      axis.text.y    = element_text(size = 10, face = "bold"),
+      axis.title.y   = element_text(size = 11, face = "bold"),
+      plot.title     = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "top",
+      legend.text    = element_text(size = 10, face = "bold")
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 4)))
+  
+  return(p)
+}
+
+################################################################################
+# PLOT SPLIT UMAP FOR MILO PIPELINE (PRETTIER VERSION)
+################################################################################
+
+plot_split_dimred <- function(obj_sub,
+                              split_by  = "treatment",
+                              color_by  = "fine_clust",
+                              reduction = "umap",
+                              pt_size   = 0.5,
+                              title     = NULL,
+                              cmap      = NULL,
+                              useRaster = TRUE) {
+  
+  library(ggplot2)
+  library(ggrastr)
+  
+  # Default stallion palette
+  if (is.null(cmap)) {
+    cmap <- c("1"="#D51F26","2"="#272E6A","3"="#208A42","4"="#89288F","5"="#F47D2B",
+              "6"="#FEE500","7"="#8A9FD1","8"="#C06CAB","19"="#E6C2DC","10"="#90D5E4",
+              "11"="#89C75F","12"="#F37B7D","13"="#9983BD","14"="#D24B27","15"="#3BBCA8",
+              "16"="#6E4B9E","17"="#0C727C","18"="#7E1416","9"="#D8A767","20"="#3D3D3D")
+  }
+  
+  emb <- Embeddings(obj_sub, reduction = reduction)
+  df  <- data.frame(
+    UMAP_1    = emb[, 1],
+    UMAP_2    = emb[, 2],
+    split_var = obj_sub@meta.data[[split_by]],
+    color_var = obj_sub@meta.data[[color_by]],
+    stringsAsFactors = FALSE
+  )
+  
+  # Shuffle for random plotting order
+  set.seed(42)
+  df <- df[sample(nrow(df)), ]
+  
+  # Expand color palette if needed
+  n_colors <- length(unique(df$color_var))
+  if (n_colors > length(cmap)) {
+    cmap <- colorRampPalette(cmap)(n_colors)
+  } else {
+    names(cmap) <- NULL
+    cmap <- cmap[1:n_colors]
+  }
+  
+  # Build plot
+  if (useRaster) {
+    p <- ggplot(df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+      geom_point_rast(size = pt_size)
+  } else {
+    p <- ggplot(df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+      geom_point(size = pt_size)
+  }
+  
+  p <- p +
+    facet_wrap(~ split_var, ncol = 2) +
+    scale_color_manual(values = cmap, name = NULL, na.value = "grey35") +
+    xlab("UMAP1") +
+    ylab("UMAP2") +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.ticks       = element_blank(),
+      axis.text        = element_blank(),
+      aspect.ratio     = 1,
+      strip.text       = element_text(face = "bold", size = 12),
+      strip.background = element_blank(),
+      legend.position  = "right",
+      legend.title     = element_blank(),
+      legend.text      = element_text(size = 10, face = "bold"),
+      legend.key.size  = unit(0.4, "cm"),
+      plot.title       = element_text(hjust = 0.5, face = "bold", size = 13)
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 4)))
+  
+  # Title: default to cell count, or custom, or NULL
+  
+  if (!is.null(title)) {
+    p <- p + ggtitle(title)
+  }
+  
+  return(p)
+}
+
+################################################################################
+# PLOT SINGLE UMAP (PRETTIER VERSION)
+################################################################################
+
+plot_single_dimred <- function(obj_sub,
+                               color_by  = "fine_clust",
+                               reduction = "umap",
+                               pt_size   = 0.5,
+                               title     = NULL,
+                               cmap      = NULL,
+                               useRaster = TRUE) {
+  
+  library(ggplot2)
+  library(ggrastr)
+  
+  # Default stallion palette
+  if (is.null(cmap)) {
+    cmap <- c("1"="#D51F26","2"="#272E6A","3"="#208A42","4"="#89288F","5"="#F47D2B",
+              "6"="#FEE500","7"="#8A9FD1","8"="#C06CAB","9"="#E6C2DC","10"="#90D5E4",
+              "11"="#89C75F","12"="#F37B7D","13"="#9983BD","14"="#D24B27","15"="#3BBCA8",
+              "16"="#6E4B9E","17"="#0C727C","18"="#7E1416","19"="#D8A767","20"="#3D3D3D")
+  }
+  
+  emb <- Embeddings(obj_sub, reduction = reduction)
+  df  <- data.frame(
+    UMAP_1    = emb[, 1],
+    UMAP_2    = emb[, 2],
+    color_var = obj_sub@meta.data[[color_by]],
+    stringsAsFactors = FALSE
+  )
+  
+  # Shuffle for random plotting order
+  set.seed(42)
+  df <- df[sample(nrow(df)), ]
+  
+  # Expand color palette if needed
+  n_colors <- length(unique(df$color_var))
+  if (n_colors > length(cmap)) {
+    cmap <- colorRampPalette(cmap)(n_colors)
+  } else {
+    names(cmap) <- NULL
+    cmap <- cmap[1:n_colors]
+  }
+  
+  # Build plot
+  if (useRaster) {
+    p <- ggplot(df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+      geom_point_rast(size = pt_size)
+  } else {
+    p <- ggplot(df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+      geom_point(size = pt_size)
+  }
+  
+  p <- p +
+    scale_color_manual(values = cmap, name = NULL, na.value = "grey35") +
+    xlab("UMAP1") +
+    ylab("UMAP2") +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.ticks       = element_blank(),
+      axis.text        = element_blank(),
+      aspect.ratio     = 1,
+      legend.position  = "right",
+      legend.title     = element_blank(),
+      legend.text      = element_text(size = 10, face = "bold"),
+      legend.key.size  = unit(0.4, "cm"),
+      plot.title       = element_text(hjust = 0.5, face = "bold", size = 13)
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 4)))
+  
+  if (!is.null(title)) {
+    p <- p + ggtitle(title)
+  }
+  
+  return(p)
+}
+
+################################################################################
+# MILO WRAPPER PLOT FUNCTIONS
+################################################################################
+
+plot_nhood_size_hist <- function(milo_obj, title = "Neighbourhood Sizes") {
+  plotNhoodSizeHist(milo_obj) +
+    ggtitle(title) +
+    theme_classic()
+}
+
+plot_pvalue_hist <- function(da_results, title = "P-value Distribution") {
+  ggplot(da_results, aes(PValue)) +
+    geom_histogram(bins = 50, fill = "#272E6A", color = "white") +
+    theme_classic() +
+    labs(title = title, x = "P-value", y = "Count")
+}
+
+plot_volcano <- function(da_results, pval_thresh = 0.05, title = "Volcano Plot") {
+  ggplot(da_results, aes(logFC, -log10(PValue))) +
+    geom_point(aes(color = PValue < pval_thresh), size = 2) +
+    scale_color_manual(values = c("grey60", "#D51F26"),
+                       labels = c("NS", paste0("P < ", pval_thresh)),
+                       name = "Significance") +
+    geom_hline(yintercept = -log10(pval_thresh), linetype = "dashed", color = "red") +
+    theme_classic() +
+    labs(title = title, x = "Log Fold Change", y = "-log10(P-value)")
+}
+
+summarise_da_by_cluster <- function(da_results, cluster_col = "fine_clust") {
+  if (!cluster_col %in% colnames(da_results)) return(NULL)
+  
+  da_results %>%
+    group_by(.data[[cluster_col]]) %>%
+    summarise(
+      n_nhoods     = n(),
+      n_sig_p0.05  = sum(PValue < 0.05, na.rm = TRUE),
+      n_up         = sum(PValue < 0.05 & logFC > 0, na.rm = TRUE),
+      n_down       = sum(PValue < 0.05 & logFC < 0, na.rm = TRUE),
+      mean_logFC   = mean(logFC, na.rm = TRUE),
+      median_logFC = median(logFC, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_sig_p0.05))
+}
+
+extract_DA_cells <- function(milo_obj, da_results, alpha = 0.05, 
+                             direction = "both", use_pvalue = TRUE) {
+  # direction: "up" (logFC > 0), "down" (logFC < 0), or "both"
+  
+  if(use_pvalue) {
+    sig_col <- "PValue"
+  } else {
+    sig_col <- "SpatialFDR"
+  }
+  
+  # Filter significant neighborhoods
+  if(direction == "up") {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha & da_results$logFC > 0]
+  } else if(direction == "down") {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha & da_results$logFC < 0]
+  } else {
+    sig_nhoods <- da_results$Nhood[da_results[[sig_col]] < alpha]
+  }
+  
+  # Extract cells from significant neighborhoods
+  cell_barcodes <- c()
+  for(i in sig_nhoods) {
+    nhood_cells <- colnames(milo_obj)[nhoods(milo_obj)[, i] == 1]
+    cell_barcodes <- c(cell_barcodes, nhood_cells)
+  }
+  
+  return(unique(cell_barcodes))
+}
+################################################################################
+# PLOT NHOOD GRAPH WITH P-VALUE FILTERING (ADJUSTABLE NODE SIZE)
+################################################################################
+
+plot_nhood_umap <- function(milo_obj, 
+                                  da_results,
+                                  alpha = 0.05,
+                                  use_pvalue = TRUE,
+                                  layout = "UMAP",
+                                  node_size_range = c(0.5, 4),
+                                  edge_width = 0.2,
+                                  title = NULL) {
+  
+  library(ggplot2)
+  library(igraph)
+  library(ggraph)
+  
+  # Get significance column
+  if (use_pvalue) {
+    da_results$sig <- da_results$PValue < alpha
+  } else {
+    da_results$sig <- da_results$SpatialFDR < alpha
+  }
+  
+  # Set non-significant logFC to 0 for coloring
+  da_results$logFC_plot <- ifelse(da_results$sig, da_results$logFC, 0)
+  
+  # Get nhood graph
+  nh_graph <- nhoodGraph(milo_obj)
+  
+  # Get layout coordinates from UMAP
+  umap_coords <- reducedDim(milo_obj, layout)
+  
+  # Calculate nhood centroids
+  nh_pos <- do.call(rbind, lapply(seq_len(ncol(nhoods(milo_obj))), function(i) {
+    cells_in_nhood <- which(nhoods(milo_obj)[, i] == 1)
+    colMeans(umap_coords[cells_in_nhood, , drop = FALSE])
+  }))
+  
+  # Build graph layout
+  layout_df <- data.frame(
+    x = nh_pos[, 1],
+    y = nh_pos[, 2]
+  )
+  
+  # Node data
+  node_data <- data.frame(
+    nhood = seq_len(ncol(nhoods(milo_obj))),
+    logFC = da_results$logFC_plot,
+    sig = da_results$sig,
+    size = colSums(nhoods(milo_obj))
+  )
+  
+  # Create ggraph
+  g <- ggraph(nh_graph, layout = as.matrix(layout_df)) +
+    geom_edge_link0(edge_colour = "grey80", edge_width = edge_width) +
+    geom_node_point(aes(fill = node_data$logFC, size = node_data$size), 
+                    shape = 21, stroke = 0.1, color = "grey30") +
+    scale_fill_gradient2(low = "#F8766C", mid = "white", high = "#00BEC4",
+                         midpoint = 0, name = "logFC",
+                         limits = c(-max(abs(da_results$logFC), na.rm = TRUE),
+                                    max(abs(da_results$logFC), na.rm = TRUE))) +
+    scale_size_continuous(range = node_size_range, name = "Nhood size") +
+    theme_void(base_size = 11) +
+    theme(
+      legend.position  = "right",
+      legend.title     = element_text(size = 10, face = "bold"),
+      legend.text      = element_text(size = 9, face = "bold"),
+      plot.title       = element_text(hjust = 0.5, face = "bold", size = 13)
+    )
+  
+  if (!is.null(title)) {
+    g <- g + ggtitle(title)
+  }
+  
+  return(g)
+}
+
+################################################################################
+# PLOT BROAD CLUSTER AND LABELED UMAP FOR PUBLISHING
+################################################################################
+
+plot_umap_hierarchical <- function(
+    seurat_obj,
+    fine_cluster_col = "fine_clust",
+    broad_cluster_col = "mapping_cell_type",
+    reduction = "umap",
+    broad_labels = NULL,
+    colors = NULL,
+    point_size = 0.3,
+    point_alpha = 0.8,
+    legend_title_size = 10,
+    legend_text_size = 7,
+    legend_width = 0.22
+) {
+  
+  # Default colors
+  if (is.null(colors)) {
+    colors <- c(
+      "Keratinocytes" = "#208A42",
+      "Fibroblasts" = "#D51F26",
+      "Immune" = "#272E6A",
+      "Endothelial" = "#89288F",
+      "Remaining" = "#808080"
+    )
+  }
+  
+  # Default broad cluster full labels (for legend)
+  if (is.null(broad_labels)) {
+    broad_labels <- c(
+      "Keratinocytes" = "KRT - Keratinocytes",
+      "Fibroblasts" = "FIB - Fibroblasts",
+      "Immune" = "IMM - Immune cells",
+      "Endothelial" = "ENDO - Endothelial cells",
+      "Remaining" = "NC - Neural-crest cells"
+    )
+  }
+  
+  # Extract embedding coordinates and metadata
+  embed_df <- as.data.frame(Embeddings(seurat_obj, reduction))
+  colnames(embed_df) <- c("Dim1", "Dim2")
+  embed_df$fine_clust <- seurat_obj@meta.data[[fine_cluster_col]]
+  embed_df$broad_clust <- seurat_obj@meta.data[[broad_cluster_col]]
+  
+  # Order by number of cells
+  broad_order <- embed_df %>%
+    count(broad_clust) %>%
+    arrange(desc(n)) %>%
+    pull(broad_clust)
+  
+  embed_df$broad_clust <- factor(embed_df$broad_clust, levels = broad_order)
+  
+  # Main UMAP plot (no labels)
+  p <- ggplot(embed_df, aes(x = Dim1, y = Dim2, color = broad_clust)) +
+    geom_point(size = point_size, alpha = point_alpha, stroke = 0) +
+    scale_color_manual(values = colors) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.background = element_rect(fill = "white", color = NA),
+      plot.margin = margin(5, 5, 5, 0)
+    ) +
+    coord_fixed(ratio = 1)
+  
+  # Build legend data
+  legend_df <- embed_df %>%
+    group_by(broad_clust, fine_clust) %>%
+    tally(name = "n_cells") %>%
+    arrange(broad_clust, desc(n_cells)) %>%
+    ungroup()
+  
+  # Create legend using grid graphics
+  create_legend <- function() {
+    
+    n_broad <- length(broad_order)
+    n_fine_per_broad <- legend_df %>% 
+      group_by(broad_clust) %>% 
+      summarise(n = n(), .groups = "drop")
+    
+    total_lines <- n_broad + sum(n_fine_per_broad$n) + (n_broad - 1) * 0.5
+    
+    line_height <- 0.9 / total_lines
+    bar_width <- 0.02
+    left_margin <- 0.03
+    text_start <- left_margin + bar_width + 0.02
+    
+    grobs <- gList()
+    y_current <- 0.97
+    
+    for (bc in broad_order) {
+      bc_char <- as.character(bc)
+      bc_color <- colors[bc_char]
+      bc_label <- broad_labels[bc_char]
+      bc_fine <- legend_df %>% filter(broad_clust == bc)
+      n_fine <- nrow(bc_fine)
+      
+      section_height <- (n_fine + 1) * line_height
+      
+      # Colored vertical bar
+      grobs <- gList(grobs, rectGrob(
+        x = unit(left_margin, "npc"),
+        y = unit(y_current - section_height/2, "npc"),
+        width = unit(bar_width, "npc"),
+        height = unit(section_height, "npc"),
+        hjust = 0,
+        vjust = 0.5,
+        gp = gpar(fill = bc_color, col = NA)
+      ))
+      
+      # Broad cluster title (colored, bold)
+      grobs <- gList(grobs, textGrob(
+        label = bc_label,
+        x = unit(text_start, "npc"),
+        y = unit(y_current, "npc"),
+        hjust = 0,
+        vjust = 0.5,
+        gp = gpar(
+          fontsize = legend_title_size,
+          fontface = "bold",
+          col = bc_color
+        )
+      ))
+      
+      y_current <- y_current - line_height
+      
+      # Fine clusters (black text, bold)
+      for (i in seq_len(n_fine)) {
+        fine_label <- paste0(
+          bc_fine$fine_clust[i],
+          " (", bc_fine$n_cells[i], ")"
+        )
+        
+        grobs <- gList(grobs, textGrob(
+          label = fine_label,
+          x = unit(text_start + 0.02, "npc"),
+          y = unit(y_current, "npc"),
+          hjust = 0,
+          vjust = 0.5,
+          gp = gpar(
+            fontsize = legend_text_size,
+            fontface = "bold",
+            col = "black"
+          )
+        ))
+        
+        y_current <- y_current - line_height
+      }
+      
+      y_current <- y_current - line_height * 0.3
+    }
+    
+    gTree(children = grobs)
+  }
+  
+  legend_grob <- create_legend()
+  
+  legend_panel <- ggplot() +
+    annotation_custom(legend_grob, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+    xlim(0, 1) + ylim(0, 1) +
+    theme_void() +
+    theme(plot.background = element_rect(fill = "white", color = NA))
+  
+  # Combine
+  final_plot <- plot_grid(
+    legend_panel,
+    p,
+    rel_widths = c(legend_width, 1 - legend_width),
+    nrow = 1,
+    align = "h"
+  )
+  
+  return(final_plot)
+}
+
+#########################################################################
+# VIOLIN GENE EXPRESSION PLOT
+#########################################################################
+
+plot_custom_expression <- function(seurat_obj,
+                                     features,
+                                     idents = NULL,
+                                     group.by = NULL,
+                                     split.by = "datasets",
+                                     pt.size = 0) {
+
+  if (!is.null(idents)) {
+    seurat_obj <- subset(seurat_obj, idents = idents)
+    if (!is.null(group.by)) {
+      seurat_obj@meta.data[[group.by]] <- factor(seurat_obj@meta.data[[group.by]], levels = idents)
+    } else {
+      Seurat::Idents(seurat_obj) <- factor(Seurat::Idents(seurat_obj), levels = idents)
+    }
+  }
+
+  features <- features[features %in% rownames(seurat_obj)]
+
+  expr_mat <- Seurat::GetAssayData(seurat_obj, layer = "data")[features, ]
+  scaled_mat <- t(apply(as.matrix(expr_mat), 1, function(x) {
+    if (max(x) == 0) return(x)
+    (x - min(x)) / (max(x) - min(x))
+  }))
+
+  seurat_obj[["scaled"]] <- Seurat::CreateAssayObject(data = scaled_mat)
+  Seurat::DefaultAssay(seurat_obj) <- "scaled"
+
+  p <- Seurat::VlnPlot(seurat_obj,
+                        features = features,
+                        group.by = group.by,
+                        split.by = split.by,
+                        pt.size = pt.size,
+                        ncol = 1,
+                        stack = TRUE,
+                        flip = TRUE,
+                        cols = c("#F8766C", "#00BEC4")) +
+    ggplot2::ylab("Scaled Expression (0-1)")
+
+  Seurat::DefaultAssay(seurat_obj) <- "RNA"
+
+  return(p)
+}
+
+#########################################################################
+# CLEAN CELLCHAT BUBBLEPLOT
+#########################################################################
+
+clean_bubble_xaxis <- function(gg, cond1 = "PBS", cond2 = "sCD83",
+                                col1 = "#F8766C", col2 = "#00BEC4") {
+  gb <- ggplot_build(gg)
+  x_labels <- gb$layout$panel_params[[1]]$x$get_labels()
+  n_x <- length(x_labels)
+  
+  base_names <- gsub(paste0("\\s*\\(", cond1, "\\)|\\s*\\(", cond2, "\\)"), "", x_labels)
+  is_cond1 <- grepl(cond1, x_labels, fixed = TRUE)
+  
+  # Strip x-axis from main plot, increase legend and title fonts
+  gg_main <- gg + theme(axis.text.x = element_blank(),
+                         axis.ticks.x = element_blank(),
+                         axis.title.x = element_blank(),
+                         axis.text.y = element_text(size = 10),
+                         plot.title = element_text(size = 15, face = "bold"),
+                         legend.title = element_text(size = 11, face = "bold"),
+                         legend.text = element_text(size = 10))
+  
+  # Build connector data
+  seg_list <- list()
+  txt_list <- list()
+  
+  i <- 1
+  while (i <= n_x) {
+    if (i < n_x && base_names[i] == base_names[i + 1]) {
+      mid <- i + 0.5
+      seg_list <- c(seg_list, list(
+        data.frame(x = i, xend = mid, y = 1, yend = 0.8, clr = col1),
+        data.frame(x = i + 1, xend = mid, y = 1, yend = 0.8, clr = col2)
+      ))
+      txt_list <- c(txt_list, list(
+        data.frame(x = mid, y = 0.7, label = base_names[i])
+      ))
+      i <- i + 2
+    } else {
+      clr <- ifelse(is_cond1[i], col1, col2)
+      seg_list <- c(seg_list, list(
+        data.frame(x = i, xend = i, y = 1, yend = 0.8, clr = clr)
+      ))
+      txt_list <- c(txt_list, list(
+        data.frame(x = i, y = 0.7, label = base_names[i])
+      ))
+      i <- i + 1
+    }
+  }
+  
+  seg_df <- do.call(rbind, seg_list)
+  txt_df <- do.call(rbind, txt_list)
+  
+  # Axis panel: continuous x matched to discrete positions
+  axis_panel <- ggplot() +
+    geom_segment(data = seg_df,
+                 aes(x = x, xend = xend, y = y, yend = yend),
+                 color = seg_df$clr, linewidth = 0.8) +
+    geom_text(data = txt_df,
+              aes(x = x, y = y, label = label),
+              angle = 90, hjust = 1, size = 3.5, vjust = 0.5) +
+    scale_x_continuous(limits = c(0.4, n_x + 0.6), expand = c(0, 0)) +
+    coord_cartesian(clip = "off", ylim = c(-0.2, 1)) +
+    theme_void() +
+    theme(plot.margin = unit(c(0, 0.5, 5, 0.5), "cm"))
+  
+  # Stack: main plot on top, axis panel below
+  gg_main / axis_panel + plot_layout(heights = c(5, 1.5))
 }

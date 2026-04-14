@@ -101,7 +101,7 @@ ENRICHMENT_PARAMS = {
 HEATMAP_PARAMS = {
     'n_top_per_celltype': 20, 'min_score_threshold': 20,
     'selection_criterion': 'combined', 'min_cell_types_appearance': 1,
-    'high_score_threshold': 50, 'final_top_n_tfs': 50,
+    'high_score_threshold': 50, 'final_top_n_tfs': 30,
     'cluster_rows': True, 'cluster_columns': False,
     'clustering_method': 'complete', 'clustering_metric': 'correlation',
     'colormap': 'bwr', 'show_significance_stars': True, 'dpi_resolution': 330
@@ -123,7 +123,7 @@ CUSTOM_CELLTYPE_ORDER = [
 
 ENRICHMENT_RANGE_COLORS = {
     (0, 4): 'lightblue', (4, 15): 'lightgreen',
-    (15, 26): 'lightcoral', (26, 34): 'lightyellow', (34, 36): 'lightgray',
+    (15, 25): 'lightcoral', (25, 33): 'lightyellow', (33, 35): 'lightgray',
 }
 
 print("scRegulate: WEIGHTED GRN + DIFFERENTIAL TF + ONTOLOGY PIPELINE")
@@ -612,10 +612,11 @@ def analyze_cluster_similarity(processed_adata, save_dir, subset_clusters=None):
     sim_df = pd.DataFrame(sim, index=ct_cols, columns=ct_cols)
 
     print("\nCreating similarity heatmap...")
-    sp = sns.clustermap(sim_df, figsize=(12, 12), annot=False, cmap="RdBu_r", center=0, cbar=False)
+    sp = sns.clustermap(sim_df, figsize=(12, 12), annot=False, cmap="RdBu_r", center=0, cbar=False,
+                        dendrogram_ratio=(0.05, 0.05))
     sp.cax.set_visible(False)
-    sp.ax_heatmap.set_xticklabels(sp.ax_heatmap.get_xticklabels(), fontsize=9, rotation=45, ha='right')
-    sp.ax_heatmap.set_yticklabels(sp.ax_heatmap.get_yticklabels(), fontsize=9)
+    sp.ax_heatmap.set_xticklabels(sp.ax_heatmap.get_xticklabels(), fontsize=11, fontweight='bold', rotation=90, ha='right')
+    sp.ax_heatmap.set_yticklabels(sp.ax_heatmap.get_yticklabels(), fontsize=11, fontweight='bold')
     sp.savefig(os.path.join(save_dir, 'tf_grn_similarity_heatmap.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -627,8 +628,11 @@ def analyze_cluster_similarity(processed_adata, save_dir, subset_clusters=None):
             sub_sim = np.clip(cosine_similarity(sub_df), 0, 1)**8
             sub_sim_df = pd.DataFrame(sub_sim, index=list(sub_W.keys()), columns=list(sub_W.keys()))
             sp2 = sns.clustermap(sub_sim_df, figsize=(12, 10), annot=True, fmt=".1f",
-                annot_kws={"size": 8}, cmap="RdBu_r", center=0, cbar=False)
+                annot_kws={"size": 8}, cmap="RdBu_r", center=0, cbar=False,
+                dendrogram_ratio=(0.08, 0.08))
             sp2.cax.set_visible(False)
+            sp2.ax_heatmap.set_xticklabels(sp2.ax_heatmap.get_xticklabels(), fontsize=11, fontweight='bold', rotation=90, ha='right')
+            sp2.ax_heatmap.set_yticklabels(sp2.ax_heatmap.get_yticklabels(), fontsize=11, fontweight='bold')
             sp2.savefig(os.path.join(save_dir, 'tf_grn_similarity_heatmap_zoom.png'), dpi=300, bbox_inches='tight')
             plt.close()
     return sim_df
@@ -714,8 +718,12 @@ def create_differential_heatmap(processed_adata, save_dir, heatmap_params, custo
                 elif pa < 0.05: sig[i, j] = '*'
 
     fh = max(8, len(ot) * 0.3)
-    fig, ax = plt.subplots(figsize=(14, fh))
-    sns.heatmap(hm, cmap=heatmap_params['colormap'], center=0, robust=True,
+    fig, ax = plt.subplots(figsize=(11, fh))
+    
+    from matplotlib.colors import LinearSegmentedColormap
+    
+    custom_cmap = LinearSegmentedColormap.from_list('pbs_scd83', ['#F8766C', '#FFFFFF', '#00BEF9'])
+    sns.heatmap(hm, cmap=custom_cmap, center=0, robust=True,
         cbar_kws={'label': 'TF Activity Change\n(sCD83 - PBS)'},
         yticklabels=True, xticklabels=True, linewidths=0.5, linecolor='lightgray', ax=ax)
     if heatmap_params['show_significance_stars']:
@@ -723,9 +731,9 @@ def create_differential_heatmap(processed_adata, save_dir, heatmap_params, custo
             for j in range(len(oc)):
                 if sig[i, j]:
                     ax.text(j+0.5, i+0.5, sig[i, j], ha='center', va='center', color='black', fontsize=8, fontweight='bold')
-    ax.set_xticklabels(ax.get_xticklabels(), fontsize=10, rotation=45, ha='right')
-    ax.set_yticklabels(ax.get_yticklabels(), fontsize=9)
-    ax.set_title('Differential TF Activity (sCD83 vs PBS)', fontsize=14, pad=20)
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=12, fontweight='bold', rotation=90, ha='center', va='top')
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=11, fontweight='bold')
+    ax.set_title('Differential TF Activity (sCD83 vs PBS)', fontsize=16, fontweight='bold', pad=20)
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, 'differential_tf_activity_heatmap.png'), dpi=heatmap_params['dpi_resolution'], bbox_inches='tight')
     plt.close()
@@ -1020,24 +1028,28 @@ def post_hoc_model_quality(model, processed_adata, tf_activities, GRN, save_dir,
         print(f"  Note: Low correlation is expected — TF activity reflects")
         print(f"  regulatory impact on targets, not expression of the TF itself.")
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 6))
 
         ax = axes[0]
         ax.hist(corr_df['spearman_r'], bins=50, color='#3498db', edgecolor='black',
-               linewidth=0.5, alpha=0.8)
+               linewidth=0.5, alpha=0.8, density=True)
+        from scipy.stats import gaussian_kde
+        kde_x = np.linspace(corr_df['spearman_r'].min() - 0.1, corr_df['spearman_r'].max() + 0.1, 200)
+        kde_y = gaussian_kde(corr_df['spearman_r'])(kde_x)
+        ax.plot(kde_x, kde_y, color='black', linewidth=2, label='KDE')
         ax.axvline(x=0, color='red', linestyle='--', alpha=0.7)
         ax.axvline(x=median_r, color='green', linestyle='-', linewidth=2,
                   label=f'Median = {median_r:.3f}')
         ax.set_xlabel('Spearman r (cluster-level)')
-        ax.set_ylabel('Number of TFs')
+        ax.set_ylabel('Density')
         ax.set_title('TF Activity vs Expression Correlation')
         ax.legend()
 
         ax = axes[1]
-        top_pos = corr_df.nlargest(10, 'spearman_r')
-        top_neg = corr_df.nsmallest(10, 'spearman_r')
+        top_pos = corr_df.nlargest(15, 'spearman_r')
+        top_neg = corr_df.nsmallest(15, 'spearman_r')
         show_tfs = pd.concat([top_pos, top_neg]).sort_values('spearman_r')
-        colors = ['#e74c3c' if v < 0 else '#2ecc71' for v in show_tfs['spearman_r']]
+        colors = ['#F8766C' if v < 0 else '#00BEC4' for v in show_tfs['spearman_r']]
         ax.barh(range(len(show_tfs)), show_tfs['spearman_r'], color=colors,
                edgecolor='black', linewidth=0.5)
         ax.set_yticks(range(len(show_tfs)))
@@ -1091,7 +1103,7 @@ def post_hoc_model_quality(model, processed_adata, tf_activities, GRN, save_dir,
               label=f'Global mean = {sil_score:.3f}')
     ax.legend(fontsize=8)
     plt.tight_layout()
-    plt.savefig(os.path.join(qc_dir, "silhouette_per_cluster.png"), dpi=200, bbox_inches='tight')
+    plt.savefig(os.path.join(qc_dir, "silhouette_per_cluster.png"), dpi=330, bbox_inches='tight')
     plt.close()
 
     # UMAP of TF activity space
@@ -1460,8 +1472,8 @@ def create_enrichment_dotplot(up_results, down_results, save_dir,
 
     # Figure sizing
     n_terms = len(sel)
-    fig_w = max(14, len(cts) * 0.45 + 4)
-    fig_h = max(6, n_terms * 0.4 + 2)
+    fig_w = max(6, len(cts) * 0.4 + 4)
+    fig_h = max(3, n_terms * 0.3 + 2)
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     cp = {c: i for i, c in enumerate(cts)}
@@ -1483,38 +1495,59 @@ def create_enrichment_dotplot(up_results, down_results, save_dir,
         dot_size = max(r['overlap'] * size_scale, min_dot)
         ax.scatter(cp[r['cell_type']], tp[r['term']],
                    s=dot_size,
-                   c='#c0392b' if r['direction'] == 'UP' else '#2980b9',
+                   c='#00BEC4' if r['direction'] == 'UP' else '#F8766C',
                    alpha=0.75, edgecolors='black', linewidth=0.5)
 
     ax.set_xticks(range(len(cts)))
-    ax.set_xticklabels(cts, rotation=45, ha='right', fontsize=9)
+    ax.set_xticklabels(cts, rotation=90, ha='center', fontsize=14, va='top', fontweight="bold")
     ax.set_yticks(range(len(sel)))
-    ax.set_yticklabels(sel, fontsize=8)
-    ax.set_xlabel('Cell Type', fontsize=12, fontweight='bold')
+    ax.set_yticklabels(sel, fontsize=12, fontweight="bold")
+    ax.set_xlabel('Cell Type', fontsize=16, fontweight='bold')
     ax.set_ylabel('Enriched GO Term', fontsize=12, fontweight='bold')
     ax.set_title('TF Enrichment (sCD83 vs PBS)\nFiltered: top 30 specific terms',
-                 fontsize=14, fontweight='bold', pad=20)
+                 fontsize=16, fontweight='bold', pad=20)
     ax.grid(True, alpha=0.2, linestyle='--')
     ax.set_axisbelow(True)
     ax.set_xlim(-0.5, len(cts) - 0.5)
     ax.set_ylim(-0.5, len(sel) - 0.5)
 
-    # Size legend
-    size_vals = sorted(set([max(1, max_ov // 4), max(1, max_ov // 2), max_ov]))
-    sl = [plt.scatter([], [], s=max(s * size_scale, min_dot), c='gray', alpha=0.7,
-          edgecolors='black', linewidth=0.5) for s in size_vals]
-    l1 = ax.legend(sl, [f'{s} TFs' for s in size_vals],
-                   title='Overlap', loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=8)
-    um = plt.scatter([], [], s=80, c='#c0392b', alpha=0.75,
-                     edgecolors='black', linewidth=0.5, label='Upregulated')
-    dm = plt.scatter([], [], s=80, c='#2980b9', alpha=0.75,
-                     edgecolors='black', linewidth=0.5, label='Downregulated')
-    ax.legend(handles=[um, dm], title='Direction', loc='upper left',
-             bbox_to_anchor=(1.02, 0.7), fontsize=8)
-    ax.add_artist(l1)
+    # Unified legend combining direction and overlap size
+    size_vals = [2, 4, 6]
+
+    legend_handles = []
+    legend_labels = []
+
+    # Direction entries
+    um = plt.scatter([], [], s=120, c='#00BEC4', alpha=0.75,
+                     edgecolors='black', linewidth=0.5)
+    dm = plt.scatter([], [], s=120, c='#F8766C', alpha=0.75,
+                     edgecolors='black', linewidth=0.5)
+    legend_handles += [um, dm]
+    legend_labels += ['Upregulated', 'Downregulated']
+
+    # Blank spacer between the two groups
+    spacer = plt.scatter([], [], s=0, c='none', edgecolors='none')
+    legend_handles.append(spacer)
+    legend_labels.append('')
+
+    # Overlap / size entries
+    for s in size_vals:
+        h = plt.scatter([], [], s=max(s * size_scale, min_dot) * 1.4,
+                        c='gray', alpha=0.7, edgecolors='black', linewidth=0.5)
+        legend_handles.append(h)
+        legend_labels.append(f'{s}+ TFs' if s == size_vals[-1] else f'{s} TFs')
+
+    ax.legend(legend_handles, legend_labels,
+              title='Direction / Overlap',
+              loc='upper left', bbox_to_anchor=(1.02, 1),
+              fontsize=12, title_fontsize=14,
+              frameon=True, framealpha=0.9,
+              borderpad=1, labelspacing=1.4,
+              handletextpad=1.0)
+
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, "enrichment_dotplot.png"),
-                dpi=300, bbox_inches='tight', facecolor='white')
+                dpi=330, bbox_inches='tight', facecolor='white')
     plt.savefig(os.path.join(save_dir, "enrichment_dotplot.pdf"),
                 bbox_inches='tight', facecolor='white')
     plt.close()
@@ -1603,6 +1636,11 @@ if __name__ == "__main__":
 
     results_df = differential_tf_activity(processed_adata=processed_adata,
                                           save_dir=save_dir, diff_params=DIFF_PARAMS)
+
+    if not args.skip_plots:
+        create_differential_heatmap(processed_adata=processed_adata,
+            save_dir=save_dir, heatmap_params=HEATMAP_PARAMS,
+            custom_order=CUSTOM_CELLTYPE_ORDER)
 
     if not args.skip_plots:
         quality = post_hoc_model_quality(

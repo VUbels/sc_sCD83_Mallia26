@@ -42,7 +42,7 @@ FONT_FAMILY = "Arial" if "Arial" in _available_families else "DejaVu Sans"
 
 GENE_GROUPS: dict[str, list[str]] = {
     "Keratinocytes": [
-        "KRT14", "CXCL8", "KRT6A", "S100A2", "COL17A1", "TP63", "KRT85", "KRT19",
+        "KRT14", "CXCL8", "KRT6A", "S100A2", "COL17A1", "TP63", "KRT85", "KRT19", "KLK10",
     ],
     "Fibroblasts": [
         "PLXDC2", "RGS5", "MMP1", "VCAM1", "CRYAB", "TAGLN", "NFKBIA", "TXN", "CXCL2",
@@ -101,15 +101,26 @@ def remove_ticks(ax, linewidth=1):
 
 def build_cluster_cmap(unique_clusters):
     """
-    Assign a distinct colour to each cluster label.
-    Uses tab20 + tab20b + tab20c to cover up to 60 clusters.
+    Assign a distinct colour to each cluster label using a fixed 20-colour
+    palette (matching the standard ArchR / custom R colour map).
+
+    Clusters are sorted alphabetically and assigned colours positionally:
+    the first cluster alphabetically receives colour 1 (#D51F26), the
+    second receives colour 2 (#272E6A), and so on.  If there are more
+    than 20 clusters the palette cycles.
     """
-    palettes = (
-        plt.cm.tab20.colors + plt.cm.tab20b.colors + plt.cm.tab20c.colors
-    )
-    cmap = {}
-    for i, cl in enumerate(unique_clusters):
-        cmap[cl] = palettes[i % len(palettes)]
+    _PALETTE_COLOURS = [
+        "#D51F26", "#272E6A", "#208A42", "#89288F", "#F47D2B",
+        "#FEE500", "#8A9FD1", "#C06CAB", "#E6C2DC", "#90D5E4",
+        "#89C75F", "#F37B7D", "#9983BD", "#D24B27", "#3BBCA8",
+        "#6E4B9E", "#0C727C", "#7E1416", "#D8A767", "#3D3D3D",
+    ]
+
+    sorted_clusters = sorted(unique_clusters, key=lambda x: str(x).casefold())
+    cmap = {
+        cl: _PALETTE_COLOURS[i % len(_PALETTE_COLOURS)]
+        for i, cl in enumerate(sorted_clusters)
+    }
     return cmap
 
 
